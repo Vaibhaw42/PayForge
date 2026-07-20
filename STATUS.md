@@ -26,7 +26,8 @@ Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain
 | Tool | Installed | Version | Needed by |
 |------|-----------|---------|-----------|
 | git | ✅ | 2.52 | now |
-| Node.js | ⚠️ | v16 (need 22 LTS) | Phase 1 |
+| Node.js | ✅ | v22.23.1 (LTS, pinned via `.nvmrc`) | Phase 1 |
+| nvm | ✅ | 0.40.4 | now |
 | pnpm | ❌ | — | Phase 1 |
 | gh CLI | ❌ | — | soon (push + PRs) |
 | Docker Desktop | ❌ | — | Phase 1 |
@@ -35,14 +36,34 @@ Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain
 Install commands (when ready):
 
 ```bash
-brew install gh
+brew install gh          # for PRs and repo mgmt
 gh auth login
 
-brew install fnm
-fnm install 22 && fnm use 22
-npm install -g pnpm
+npm install -g pnpm      # monorepo tool (Phase 1)
 
-brew install --cask docker
+brew install --cask docker   # Phase 1
+```
+
+Node auto-switch on `cd` into repo (nvm hook — add to `~/.zshrc` once):
+
+```bash
+autoload -U add-zsh-hook
+load-nvmrc() {
+  local node_version="$(nvm version)"
+  local nvmrc_path="$(nvm_find_nvmrc)"
+  if [ -n "$nvmrc_path" ]; then
+    local nvmrc_node_version=$(nvm version "$(cat "${nvmrc_path}")")
+    if [ "$nvmrc_node_version" = "N/A" ]; then
+      nvm install
+    elif [ "$nvmrc_node_version" != "$node_version" ]; then
+      nvm use
+    fi
+  elif [ "$node_version" != "$(nvm version default)" ]; then
+    nvm use default
+  fi
+}
+add-zsh-hook chpwd load-nvmrc
+load-nvmrc
 ```
 
 ## Recent commits
