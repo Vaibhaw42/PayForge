@@ -28,20 +28,17 @@ Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain
 | git | ✅ | 2.52 | now |
 | Node.js | ✅ | v22.23.1 (LTS, pinned via `.nvmrc`) | Phase 1 |
 | nvm | ✅ | 0.40.4 | now |
-| pnpm | ❌ | — | Phase 1 |
-| gh CLI | ❌ | — | soon (push + PRs) |
-| Docker Desktop | ❌ | — | Phase 1 |
+| pnpm | ✅ | 11.15.1 (via corepack) | Phase 1 |
+| Docker Desktop | ✅ | 29.6.1 + Compose v5.3 + Buildx | Phase 1 |
+| Rosetta 2 | ✅ | installed | Docker (arm64 mostly) |
+| gh CLI | ❌ | — | later (PR mgmt) |
 | Homebrew | ✅ | 6.0.1 | now |
 
-Install commands (when ready):
+Install commands (only gh left):
 
 ```bash
 brew install gh          # for PRs and repo mgmt
 gh auth login
-
-npm install -g pnpm      # monorepo tool (Phase 1)
-
-brew install --cask docker   # Phase 1
 ```
 
 Node auto-switch on `cd` into repo (nvm hook — add to `~/.zshrc` once):
