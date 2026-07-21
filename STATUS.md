@@ -13,8 +13,8 @@ Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain
 | Day | Topic | Deliverable | Status |
 |-----|-------|-------------|--------|
 | 1 | Money movement + actors | `docs/domain/actors.md` | ✅ done |
-| 2 | Payment methods (cards + UPI deep-dive) | `docs/domain/payment-methods.md` | ⏳ next |
-| 3 | Transaction lifecycle + states | `docs/domain/txn-lifecycle.md` |
+| 2 | Payment methods (cards + UPI deep-dive) | `docs/domain/payment-methods.md` | ✅ done |
+| 3 | Transaction lifecycle + states | `docs/domain/txn-lifecycle.md` | ⏳ next |
 | 4 | Money representation + double-entry basics | `docs/domain/money-math.md` + `ledger-101.md` |
 | 5 | Idempotency + reliability | `docs/domain/idempotency.md` |
 | 6 | Compliance map (PCI, RBI PA/PG, KYC/AML) | `docs/domain/compliance-map.md` |
