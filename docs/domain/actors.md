@@ -177,7 +177,145 @@ All card message flow globally speaks **ISO 8583**, a fixed protocol with 128 nu
 
 ## 3 · UPI ecosystem
 
-_(pending)_
+### 3.1 · How UPI differs structurally from cards
+
+UPI is India's real-time bank-to-bank rail, operated by NPCI (launched April 2016). It replaces card networks + interchange + T+1 settlement with a **government-run switch that speaks directly to member banks**. Simpler, cheaper, faster.
+
+| Aspect | Cards | UPI |
+|--------|-------|-----|
+| Rail | Visa/MC/RuPay | NPCI UPI switch (on top of IMPS) |
+| Identifier | 16-digit PAN | **VPA** (`user@psp-bank-code`) |
+| Direction | Pull (merchant charges) | **Push OR pull** |
+| Money latency | T+1 batch | **~seconds, real-time settle** |
+| P2M MDR | 1.5–2.5% | **0%** (govt mandate, Jan 2020) |
+| Credit line | Native | RuPay CC on UPI only (has MDR) |
+| Global | Yes | India-only (expanding to UAE, SG, FR, LK, NP, BT) |
+| KYC binding | Card → issuer | VPA → bank account |
+
+### 3.2 · Actors
+
+```mermaid
+flowchart LR
+  Payer[Payer / Customer]
+  App[TPAP App<br/>PhonePe · GPay · Paytm]
+  PspP[Payer PSP Bank<br/>YES · HDFC · Axis]
+  NPCI[NPCI UPI Switch]
+  PspR[Payee PSP Bank]
+  RB[Remitter Bank<br/>Payer's actual bank]
+  BB[Beneficiary Bank<br/>Payee's actual bank]
+  Payee[Payee / Merchant]
+
+  Payer --> App
+  App --> PspP
+  PspP --> NPCI
+  NPCI --> PspR
+  NPCI -.debit.-> RB
+  NPCI -.credit.-> BB
+  PspR --> Payee
+```
+
+- **Payer / Payee** — end users (P2P or P2M).
+- **TPAP** — user-facing app (PhonePe, GPay, Paytm, CRED, Amazon Pay). Non-bank. Cannot connect to NPCI directly.
+- **PSP Bank** — a scheduled commercial bank running the UPI-PSP interface *for* a TPAP. Every TPAP contracts with 1+ PSP Banks. NPCI recognizes only banks as endpoints. Common handles: `@ybl` (YES via PhonePe), `@okhdfcbank`/`@okaxis` (via GPay), `@paytm` (Paytm), `@axl` (Axis via CRED).
+- **NPCI UPI Switch** — central operator. Runs VPA registry, mandate registry (AutoPay), routing, reconciliation.
+- **Remitter Bank** — payer's actual bank. May or may not equal payer's PSP Bank.
+- **Beneficiary Bank** — payee's actual bank.
+
+**Crucial insight:** the TPAP app, the PSP Bank, and the remitter bank are often **three different entities**. UPI decouples them — a user's SBI money can flow via PhonePe (TPAP) using YES Bank (PSP) as the interface into NPCI.
+
+### 3.3 · Two request patterns
+
+- **UPI Push** (scan QR, pay to VPA) — payer initiates. >90% of P2M today.
+- **UPI Collect** (request-to-pay) — payee initiates a collect request. Fell out of favor after fake-collect fraud waves.
+
+### 3.4 · Message flow — UPI push txn
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as Payer
+  participant TP as TPAP (PhonePe)
+  participant PSPP as Payer's PSP Bank (YES)
+  participant NPCI as NPCI UPI Switch
+  participant RB as Remitter Bank (SBI)
+  participant BB as Beneficiary Bank (ICICI)
+  participant PSPB as Payee's PSP Bank
+  participant M as Merchant
+
+  U->>TP: scan QR, enter amount, enter UPI PIN
+  TP->>PSPP: sendMoney (VPA, amount, PIN block)
+  PSPP->>NPCI: TxnReq
+  NPCI->>NPCI: resolve VPA → beneficiary account
+  NPCI->>RB: debit remitter (verify PIN, balance, limit)
+  RB-->>NPCI: debit success
+  NPCI->>BB: credit beneficiary
+  BB-->>NPCI: credit success
+  NPCI-->>PSPP: txn success
+  NPCI-->>PSPB: credit notification
+  PSPB-->>M: webhook / push
+  PSPP-->>TP: success screen
+  TP-->>U: "Paid ₹500"
+```
+
+Full cycle 2–5 seconds. Money moves between banks **in real time** — no T+1 batch.
+
+### 3.5 · VPA resolution
+
+For `merchant@ybl`:
+
+1. Payer's PSP Bank forwards request to NPCI.
+2. NPCI's **VPA registry** maps `merchant@ybl` → PSP Bank YES → underlying account (e.g. ICICI acct #12345).
+3. NPCI routes the credit-request to ICICI (beneficiary bank).
+
+A **VPA is a bank-account routing token**. It hides the account number from the payer, and the underlying bank can be swapped in TPAP settings without the VPA changing.
+
+### 3.6 · Static QR vs dynamic QR — the reconciliation split
+
+| Type | Contents | Use case |
+|------|----------|----------|
+| **Static QR** | `pa=merchant@ybl&pn=Name` (VPA + name) | Kirana counter. Payer enters amount. Human-eye reconciliation. |
+| **Dynamic QR** | `pa=merchant@ybl&pn=Name&am=500&tr=ORDER-8842&tn=...` | E-commerce / any scale. Order ID auto-echoed back → automatic reconciliation. |
+
+**Static QR reconciliation problem:** incoming txn has only VPA + name + amount + UTR. Two customers paying same amount at same second → collision. Fine for a shopkeeper who sees the customer standing there; broken at scale.
+
+**Solutions at scale:**
+
+- **Dynamic QR with `tr` (transaction reference)** — echoes back your order id.
+- **VPA per order** — large PAs mint thousands of VPAs per second, one per order.
+- **UPI Intent link** — mobile deep-link with `tr` + `am` pre-filled: `upi://pay?pa=...&am=...&tr=...`.
+
+**Design lesson for PayForge:** every UPI acceptance generates a per-order dynamic QR / Intent link with your order id in `tr`. Reconciliation is a first-class feature, not an afterthought.
+
+### 3.7 · Special UPI variants (to be aware of)
+
+- **UPI Lite** — small offline txns (≤ ₹200), no PIN, wallet-like top-up. Fast for low-value flows.
+- **UPI AutoPay (e-Mandate)** — recurring debits (Netflix, EMI). One-time mandate approval → auto-debit thereafter.
+- **UPI 123Pay** — UPI for feature phones via IVR / missed-call.
+- **RuPay Credit Card on UPI** — credit line accessed via UPI. **This DOES carry MDR** (uses card rails underneath). Big new revenue stream for PSPs since 2022.
+- **UPI Circle** — delegated payments (parent → child limited-access VPA).
+- **Credit Line on UPI** — pre-sanctioned bank credit line accessed via UPI (2023+).
+- **UPI International** — inbound/outbound corridors: UAE, Singapore, France, Sri Lanka, Nepal, Bhutan, Mauritius.
+
+### 3.8 · UPI reversal / refund
+
+- **Auto-reversal (NPCI decision)** — if debit succeeded but credit failed mid-transaction, NPCI auto-reverses. Payer sees the debit undone within minutes.
+- **Merchant-initiated refund** — merchant sends refund via PSP Bank → NPCI → payer's bank credit. **Real-time.** Payer sees refund in seconds to minutes (vs 5–7 business days for cards).
+
+### 3.9 · How UPI PSPs make money despite 0% MDR
+
+UPI P2M MDR = 0% (govt mandate). PSPs (PhonePe, GPay, Paytm) run UPI at a **loss per txn**, subsidize via layered revenue:
+
+1. **RuPay Credit Card on UPI MDR** — biggest new stream since 2022.
+2. **BBPS (Bharat BillPay) commissions** — bill payments (electricity, gas, DTH, mobile, insurance) earn commission per txn.
+3. **Cross-sell financial products** — insurance, mutual funds, digital gold, personal loans, credit-card sourcing. PhonePe distributes → earns commissions from insurers, AMCs, lenders.
+4. **Merchant services** — soundbox rentals (~₹99–125/mo/device across huge fleets), POS terminals, merchant subscriptions, business analytics.
+5. **Ads / super-app placements** — sponsored offers, home-screen tiles.
+6. **Investment platforms** — PhonePe stocks, PhonePe Wealth, etc.
+7. **Small govt incentive** — RuPay debit + BHIM-UPI subsidy (~₹0.15/txn) via banks, share to TPAPs.
+
+**Mental model:** UPI = customer acquisition cost. Monetize via financial products stacked on top.
+
+
 
 ---
 
