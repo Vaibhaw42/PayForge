@@ -549,20 +549,50 @@ No merchant accepts everything from day one. Choose based on customer segment, t
 
 ## 8 · What I still don't understand
 
-Vaibhaw to fill honestly after re-reading. Coach will close gaps before Day 3.
+Honest gaps as of end of Day 2.
 
-Candidate gap areas to consider:
+### 8.1 · ISO 8583 — the wire format
 
-- ISO 8583 fields I'd need to know (or not) at PayForge's abstraction level.
-- Exactly which network calls (e.g. VTS API for tokenization) belong at merchant vs PSP layer.
-- UPI mandate lifecycle (create → suspend → revoke → expire) — need a state diagram of my own.
-- BNPL / EMI economics — subvention accounting on the ledger is still fuzzy.
-- Netbanking reconciliation without webhooks — practical fallback path.
-- PPI KYC re-verification cycles (RBI Master Directions detail).
-- Failure retry policies per method — how many retries, over what window, before terminal.
+Not clear on the actual algorithm / wire format. Where does JSON stop and ISO 8583 start? At what layer in the flow does the merchant's JSON POST become a 128-field ISO 8583 message? Who does the translation — PSP, PG, acquirer processor? What happens if PSP maps a field wrong?
 
-- ...
-- ...
+**Deeper questions:**
+- What are the top ~10 ISO 8583 fields I would need to recognize (PAN, amount, MCC, etc.)?
+- Does the PSP hide ISO 8583 completely from me (as a merchant), or do I ever need to think about it?
+- For PayForge, is ISO 8583 knowledge relevant only when we mock a PSP connector, or also for real integration?
 
-**Instruction to future me:** don't skip. Naming the gap is 90% of closing it.
+### 8.2 · BNPL is still fuzzy
+
+I get the pitch (buy now, pay later) but not the mechanics:
+- Who bears the credit risk if customer never repays? BNPL NBFC or merchant?
+- Underwriting in 30 seconds — what signals does it use if there's no CIBIL check that fast?
+- What does the merchant see on their statement — is it treated like a card txn or a direct bank transfer?
+- Regulatory: after RBI's 2022 restriction on non-bank wallet-loading-via-credit, what's the exact legal path a BNPL NBFC uses today?
+
+### 8.3 · No-cost EMI subvention accounting on the ledger
+
+I know someone pays the interest but I don't know how it lands in accounting:
+- If merchant absorbs the subvention, is it a discount (revenue reduction) or a marketing expense (cost line)?
+- Does the customer see the full sticker price or the discounted price on their card statement?
+- How is GST computed — on the discounted amount or the sticker?
+- For PayForge's ledger, is subvention a separate journal entry or embedded in the payment posting?
+
+### 8.4 · Credit lines — Credit-Line-on-UPI vs RuPay-CC-on-UPI still swap in my head
+
+Even with the comparison table in §2.7, the difference (UPI rail vs card rail) is not intuitive yet. Need to draw the full 8-hop trace for a Credit-Line-on-UPI txn and a RuPay-CC-on-UPI txn side by side to lock the difference.
+
+### 8.5 · Retry policy defaults per method
+
+For each method (card, UPI, netbanking, wallet, EMI, BNPL), what's the standard retry policy? Number of retries, timeout window, exponential backoff parameters, before I mark terminal. Real fintechs have documented policies — I want to see one.
+
+### 8.6 · UPI mandate lifecycle
+
+I only touched mandate creation + execution. Missing:
+- What states can a mandate be in? (Active, Paused, Revoked, Expired, Failed)
+- Transitions between them — who can trigger which?
+- What happens if payer's bank fails a debit — mandate stays active or degrades?
+- Grace period for retries within a debit cycle?
+
+---
+
+**Instruction to future me:** these gaps are the shortlist for Day 3 (txn lifecycle) and later phases. Naming the gap is 90% of closing it.
 
