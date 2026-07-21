@@ -1,19 +1,19 @@
 # STATUS
 
-**Updated:** 2026-07-20
+**Updated:** 2026-07-21
 
 ## Current phase
 
-🟡 **Phase -1 · FinTech Fundamentals** — Day 0 (kickoff)
+🟡 **Phase -1 · FinTech Fundamentals** — Day 1 complete → Day 2 next
 
 Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain/).
 
 ## This week's plan
 
-| Day | Topic | Deliverable |
-|-----|-------|-------------|
-| 1 | Money movement + actors | `docs/domain/actors.md` |
-| 2 | Payment methods (cards + UPI deep-dive) | `docs/domain/payment-methods.md` |
+| Day | Topic | Deliverable | Status |
+|-----|-------|-------------|--------|
+| 1 | Money movement + actors | `docs/domain/actors.md` | ✅ done |
+| 2 | Payment methods (cards + UPI deep-dive) | `docs/domain/payment-methods.md` | ⏳ next |
 | 3 | Transaction lifecycle + states | `docs/domain/txn-lifecycle.md` |
 | 4 | Money representation + double-entry basics | `docs/domain/money-math.md` + `ledger-101.md` |
 | 5 | Idempotency + reliability | `docs/domain/idempotency.md` |
@@ -73,4 +73,5 @@ None.
 
 ## Next session
 
-- Day 1: **Money Movement + Actors** teaching + `actors.md` deliverable.
+- Day 2: **Payment Methods** deep-dive (cards, UPI, netbanking, wallets, EMI, BNPL). Deliverable: `docs/domain/payment-methods.md`.
+- Before starting Day 2, Vaibhaw to fill Section 7 ("What I still don't understand") in `actors.md`.

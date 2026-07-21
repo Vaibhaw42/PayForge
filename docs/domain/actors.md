@@ -321,7 +321,157 @@ UPI P2M MDR = 0% (govt mandate). PSPs (PhonePe, GPay, Paytm) run UPI at a **loss
 
 ## 4 · Money-flow trace — ₹1000 card txn end-to-end
 
-_(pending)_
+**Scenario:** Customer buys ₹1000 book on a PayForge-integrated merchant. Customer's card = HDFC debit (Visa). Merchant uses PayForge (acting as PA) with **YES Bank** as sponsor, and merchant's business account is with **ICICI**.
+
+### 4.1 · Timeline
+
+| Stage | When | What happens | Money moved? |
+|-------|------|--------------|--------------|
+| **A · Authorization** | t = 0s → 3s | Merchant → PayForge → PG → Acquirer → Visa → HDFC. HDFC places ₹1000 **hold** on customer's account. Returns auth code. | No — hold only |
+| **B · Capture** | t = 0s → 5s (auth+capture in one call for e-commerce = "sale") | Merchant confirms. Hold converted into a real debit request. | Committed but not yet moved between banks |
+| **C · Clearing** | End of business day (T, ~23:00) | Visa aggregates all txns of the day, computes net owed between HDFC (issuer) and PayForge's acquirer chain (Visa → YES via sponsor). Publishes settlement instructions. | No — accounting only |
+| **D · Settlement** | T+1 morning (via RTGS) | HDFC debits customer's account. Money flows: HDFC → Visa's settlement bank → YES Bank (as acquirer-side sponsor for PayForge's nodal). | Yes — between banks |
+| **E · Payout** | T+1 or T+2 (per merchant contract) | PayForge debits its nodal (at YES), credits merchant's business account at ICICI via IMPS/NEFT/RTGS. Merchant finally has spendable money. | Yes — nodal → merchant |
+
+### 4.2 · Sequence diagram (all five stages)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Customer
+  participant M as Merchant
+  participant PF as PayForge (PA)
+  participant Acq as Acquirer / YES
+  participant N as Visa Network
+  participant HDFC as HDFC (Issuer)
+  participant ICICI as Merchant's ICICI
+
+  Note over C,HDFC: Stage A · Authorization (0–3 s)
+  C->>M: pays ₹1000
+  M->>PF: POST /orders (₹1000)
+  PF->>Acq: auth req
+  Acq->>N: forward
+  N->>HDFC: route by BIN
+  HDFC-->>N: approved (HOLD placed)
+  N-->>Acq: approve + auth code
+  Acq-->>PF: approve
+  PF-->>M: success
+  M-->>C: "Payment successful"
+
+  Note over PF,HDFC: Stage B · Capture (same call for e-commerce)
+  PF->>N: capture req
+  N->>HDFC: capture
+  HDFC-->>N: hold → real debit-pending
+
+  Note over N,HDFC: Stage C · Clearing (EOD batch)
+  N->>N: aggregate day's txns · compute net · publish files
+  Note right of N: NO money moves yet
+
+  Note over HDFC,ICICI: Stage D · Settlement (T+1 via RTGS)
+  HDFC->>N: settle net
+  N->>Acq: credit YES (as PF's acquirer chain)
+  Note right of Acq: PayForge nodal at YES now shows the ₹1000
+
+  Note over PF,ICICI: Stage E · Payout (T+1 or T+2)
+  PF->>ICICI: IMPS/NEFT/RTGS from nodal → merchant business acct
+  ICICI-->>M: usable balance ₹1000 − MDR
+```
+
+### 4.3 · Key insights
+
+- Customer sees "Payment Successful" **before any money has actually moved between banks**. The auth is a promise.
+- The bug surface between stage B (commit) and stage D (settle) is where reconciliation systems live. This is Phase 5 (Ledger) and Phase 6 (Settlement) of PayForge.
+- Merchant's usable money lags the customer's checkout by **~24–48 hours**. The float in between sits in PayForge's nodal — legally not PayForge's money.
+
+---
+
+## 5 · Fee breakdown
+
+For a ₹1000 credit-card txn (typical Indian rates; regulated caps apply per card type). All fees are approximate — actual rates depend on network, card type (credit/debit/prepaid), merchant category, and PA contract.
+
+| Line item | Actor receiving | Rate | Amount |
+|-----------|-----------------|------|--------|
+| Interchange | Issuer (HDFC) | ~1.10% | **₹11.00** |
+| Scheme / assessment fee | Card network (Visa) | ~0.13% | **₹1.30** |
+| Acquirer margin | Acquiring bank (YES via chain) | ~0.20% | **₹2.00** |
+| PA / PSP markup | PayForge | ~0.55% | **₹5.50** |
+| GST 18% on fees | Government | 18% × ₹19.80 | **₹3.56** |
+| **Total MDR** |  | ~2.34% | **~₹23.36** |
+| **Merchant receives** |  |  | **~₹976.64** |
+
+**Notes:**
+
+- Debit-card MDR is much lower (RBI-capped, ~0.4–0.9% by category).
+- AMEX / Diners typically 3–3.5% (no interchange model, direct network-issuer).
+- International cards attract additional cross-border assessment (~1%).
+- **UPI P2M MDR = 0%** — merchant receives full ₹1000. All actors work on that flow at a loss, subsidized elsewhere (see §3.9).
+- **RuPay debit ≤ ₹2000 = 0% MDR** (govt push).
+- **RuPay Credit Card on UPI = has MDR** (~2%, uses card rails underneath).
+
+---
+
+## 6 · India-specific notes (RBI, NPCI, PA/PG, UPI)
+
+### 6.1 · RBI PA/PG Guidelines, March 2020
+
+The single most important regulation to understand for PayForge.
+
+- Created two RBI-recognized categories:
+  - **PA (Payment Aggregator)** — can **hold merchant funds** in escrow. Requires RBI PA license. Minimum net worth ₹15 crore initially, ₹25 crore ongoing.
+  - **PG (Payment Gateway)** — pure tech provider, **cannot hold funds**. No license required to be a PG, but if you touch money you must be a PA.
+- Escrow account rules — no commingling, no interest to PA, strict reconciliation.
+- Merchant onboarding KYC responsibility falls on the PA.
+- Data storage — must be in India (see 6.4).
+
+### 6.2 · Sponsor bank requirement
+
+Non-bank PAs cannot directly connect to networks or NPCI. Every PA has a **sponsor bank** (scheduled commercial bank) that:
+
+- Hosts the PA's nodal/escrow account.
+- Vouches for the PA to networks / RBI.
+- Bears compliance responsibility for activity on the account.
+
+Concentration risk: YES Bank moratorium (Mar 2020) briefly froze Razorpay / PhonePe operations. Large PAs today diversify across multiple sponsor banks (Razorpay uses ICICI + others).
+
+### 6.3 · UPI government mandates
+
+- **Zero MDR for UPI P2M** — Ministry of Finance, effective Jan 2020. PSPs run UPI at a loss on the flow.
+- **Zero MDR for RuPay debit ≤ ₹2000** — same mandate.
+- **UPI market-share cap** — NPCI plans to enforce a 30% cap per TPAP by Dec 2026 (originally Dec 2024, deferred). PhonePe (~47%) and GPay (~35%) are above cap; forced redistribution ahead.
+- **UPI International** — RBI-driven push (UAE, SG, FR, LK, NP, BT, MU).
+
+### 6.4 · Data localization (RBI, April 2018)
+
+All **payment system data** must be stored **only in India**. Applies to card networks, PAs, PGs, wallets, TPAPs, PSP Banks. Copies may be made abroad *after* being stored in India (for global-processor use cases like Visa's fraud engine).
+
+**Consequence for PayForge:** DB must be Indian region (ap-south-1 or on-prem India). Backup replication must be Indian. Vendor selection (cloud, monitoring, logging) constrained.
+
+### 6.5 · KYC / AML
+
+- **Merchant KYC** — PA is responsible. Uses DigiLocker, PAN, GST, bank penny-drop verification, video KYC.
+- **Customer KYC** — done by the issuing bank (for cards) or the PSP Bank (for UPI VPA registration). PA/merchant re-uses this.
+- **AML / STR / SAR** — RBI's FIU-IND requires Suspicious Transaction Reports for flagged patterns.
+- **PMLA** — Prevention of Money Laundering Act applies to PAs; must retain records 5+ years.
+
+### 6.6 · NPCI's operational surface
+
+NPCI is not just UPI. Also runs:
+
+| System | Purpose |
+|--------|---------|
+| **UPI** | Real-time bank-to-bank |
+| **IMPS** | Real-time inter-bank (underlying UPI) |
+| **NACH** | Bulk debits (SIPs, salaries, EMI) |
+| **AePS** | Aadhaar-based banking at BC agents |
+| **RuPay** | India's card network |
+| **BHIM** | NPCI's reference UPI app |
+| **BBPS (Bharat BillPay)** | Standardized bill payments |
+| **NETC (FASTag)** | Toll collection |
+| **CTS** | Cheque truncation |
+
+For PayForge you'll integrate directly with **UPI**, indirectly touch **RuPay**, and possibly consume **BBPS** later.
+
+
 
 ---
 
@@ -339,4 +489,12 @@ _(pending)_
 
 ## 7 · What I still don't understand
 
-_(pending)_
+_(Open questions — Vaibhaw to fill in with honest gaps after re-reading. Coach will address these before advancing to Day 2 topic.)_
+
+- ...
+- ...
+- ...
+
+**Instruction for future me / any AI reading this:** don't skip this section. Naming the gap is 90% of closing it.
+
+
