@@ -489,12 +489,57 @@ _(pending)_
 
 ## 7 · What I still don't understand
 
-_(Open questions — Vaibhaw to fill in with honest gaps after re-reading. Coach will address these before advancing to Day 2 topic.)_
+Honest gaps as of end of Day 1. To be closed by re-reading, Day 2+ material, and coach re-quizzes.
 
-- ...
-- ...
-- ...
+### 7.1 · Terminology still mingles
 
-**Instruction for future me / any AI reading this:** don't skip this section. Naming the gap is 90% of closing it.
+**PA, PG, PSP, Processor, Network** — these four still blur together for me. The distinctions I keep having to re-look up:
+
+- **PA vs PG** — both are "the thing merchants integrate with", but PA has a license to hold money in escrow and PG does not. Most Indian aggregators (Razorpay) are actually **both** — that's why they blur.
+- **PSP** — umbrella word. In global usage = any payment company. In UPI = "PSP Bank" = a licensed bank running the UPI-PSP interface for a TPAP. Same acronym, two very different meanings.
+- **Processor** — invisible tech vendor inside a bank (issuer or acquirer). I keep wanting to place it in the merchant's flow, but the merchant never sees it directly.
+- **Network** — Visa/MC/RuPay. Switch in messages, clearer in money. It never approves or denies — the issuer does.
+
+**Quick disambiguation table for future me:**
+
+| Term | Side | Legal to hold money? | Merchant-facing? | Example |
+|------|------|----------------------|------------------|---------|
+| Issuer | Issuing | Yes (customer's bank) | No | HDFC (cardholder's bank) |
+| Acquirer | Acquiring | Yes (merchant's bank) | No (via PA) | ICICI, YES |
+| Network | Middle | No | No | Visa, MC, RuPay |
+| Processor | Inside a bank | No | No — invisible | FIS, M2P, Worldline |
+| PA | Acquiring | **Yes, in escrow** | **Yes** | Razorpay, Cashfree |
+| PG | Acquiring | No | Sometimes | (embedded in PAs today) |
+| PSP (global) | Umbrella | Depends | Yes | Stripe, Razorpay |
+| PSP Bank (UPI) | UPI-side | Yes (nodal-like) | No — sits behind TPAP | YES Bank, HDFC |
+| TPAP | UPI-side | No | Yes (the app) | PhonePe, GPay |
+| NPCI | UPI-side | No (operator) | No | UPI switch operator |
+| RBI | Regulator | N/A | No | Reserve Bank |
+
+### 7.2 · Reverse flow (refund / reversal / chargeback) is still fuzzy
+
+I get that refund runs on the same rails in reverse, but:
+
+- **Chargeback vs refund** — I don't yet know the difference. Both send money back to the customer, but I sense chargeback = customer disputes via issuer, refund = merchant initiates. Need to be clearer.
+- Who eats the loss on a chargeback? Merchant? PA? Issuer?
+- Time windows — how long does a customer have to file a chargeback?
+- What is the **liability shift** (I saw a mention in glossary) — when does it flip from merchant to issuer or vice versa?
+- UPI reversal vs UPI refund — I need cleaner boundaries.
+
+### 7.3 · Money math + rounding
+
+I haven't yet mentally verified how minor units + GST + settlements avoid rounding drift. Day 4's `money-math.md` should hammer this.
+
+### 7.4 · Compliance is still name-only
+
+I can recite "RBI PA/PG, data localization, KYC/AML" but I can't yet explain, for a given feature, *which specific rule* it falls under. Day 6's `compliance-map.md` is where this must become concrete.
+
+### 7.5 · How real players actually work
+
+Stripe, Razorpay engineering blogs — I've heard names but not read the deep-dives yet. Day 7's `reference-architecture-notes.md`.
+
+---
+
+**Instruction for future me / any AI reading this:** don't skip this section. Naming the gap is 90% of closing it. Re-read Section 1 glossary + Section 2 four-corner diagram + the disambiguation table above every time these terms start mingling again.
 
 
