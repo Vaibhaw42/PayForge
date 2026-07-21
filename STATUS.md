@@ -4,7 +4,7 @@
 
 ## Current phase
 
-🟡 **Phase -1 · FinTech Fundamentals** — Day 1 complete → Day 2 next
+🟡 **Phase -1 · FinTech Fundamentals** — Day 2 complete → Day 3 next
 
 Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain/).
 
@@ -73,5 +73,5 @@ None.
 
 ## Next session
 
-- Day 2: **Payment Methods** deep-dive (cards, UPI, netbanking, wallets, EMI, BNPL). Deliverable: `docs/domain/payment-methods.md`.
-- Before starting Day 2, Vaibhaw to fill Section 7 ("What I still don't understand") in `actors.md`.
+- Day 3: **Transaction lifecycle + states** — auth/capture/clearing/settlement state machines, retry semantics, idempotency contracts. Deliverable: `docs/domain/txn-lifecycle.md`.
+- Before starting Day 3, Vaibhaw to fill Section 8 ("What I still don't understand") in `payment-methods.md`.

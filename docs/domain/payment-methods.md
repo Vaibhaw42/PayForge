@@ -304,34 +304,265 @@ Symptom: payer's bank debits the money, but the credit-confirmation path times o
 
 ## 3 · Netbanking
 
-_(pending)_
+Payment via customer's bank internet-banking portal — customer redirected from merchant checkout to their bank's hosted page, logs in, authorizes debit, returns.
+
+### 3.1 · Flow
+
+1. Merchant checkout lists ~50+ Indian bank options.
+2. Customer picks bank → redirected to bank's netbanking portal.
+3. Customer logs in (username + password + OTP).
+4. Bank shows txn confirmation with amount.
+5. Customer approves.
+6. Bank sends payment via NEFT/IMPS to merchant's acquirer.
+7. Bank redirects back to merchant with success/fail marker.
+
+### 3.2 · Properties
+
+- **Auth latency:** 10–30 s (customer types password + OTP; slow bank sites even slower).
+- **Money latency:** T+1 typical; some banks IMPS-instant.
+- **MDR:** ~0.9–1.5% depending on bank.
+
+### 3.3 · Failure modes
+
+- **High UX drop-off** — 30–40% abandonment during bank redirect (slow bank sites, session timeouts).
+- Bank portal downtime — several banks have poor uptime.
+- Customer forgets password → drop-off.
+- Return-URL mismatch → merchant sees no confirmation → orphaned txn (reconciliation via bank statement or PSP status API).
+
+### 3.4 · Why netbanking is dying
+
+Share in Indian e-comm dropped from ~15% (2018) to ~3–5% today because:
+
+- **UPI's UX is dramatically better** (3 taps vs 8+, no passwords, no OTP fatigue on top of login OTP).
+- **UPI's 0% MDR** vs netbanking's ~1% — merchants push UPI.
+- **Mobile-first India** — netbanking was designed for desktop, painful on phones.
+- **No session-timeout drop-offs, no redirect loops** on UPI.
+- **Real-time money** on UPI vs T+1 on netbanking.
+
+### 3.5 · When netbanking is still relevant
+
+- Older cohorts (cards + UPI-averse).
+- High-value txns (₹1L+, above UPI cap for some banks).
+- Bank cashback promotions.
+- Government / utility payments where netbanking is default.
+
+**India integration nuance:** PSPs aggregate all ~50 banks into one checkout dropdown — merchant integrates once via PSP, not per bank. Historic aggregators here were **BillDesk** and **CCAvenue**.
+
+
 
 ---
 
 ## 4 · Wallets (PPI — Prepaid Payment Instruments)
 
-_(pending)_
+RBI-defined category. A wallet is a **prepaid balance stored on the wallet-issuer's books**, tied to the customer's KYC.
+
+### 4.1 · Three PPI KYC tiers (RBI Master Directions)
+
+| Tier | KYC | Balance cap | Load/mo | Merchant use |
+|------|-----|-------------|---------|--------------|
+| **Small (Min-KYC)** | Mobile OTP | ₹10k | ₹10k | P2M only, no cash-out |
+| **Full-KYC** | Aadhaar + PAN or video KYC | ₹2L | Unlimited (sub-limits apply) | P2P + P2M + cash-out to bank |
+| **Gift** | Buyer's KYC | ₹10k | One-time load | P2M only, no reload |
+
+### 4.2 · Three loop types
+
+- **Open-loop PPI** — usable at any merchant that accepts it. Paytm Wallet, PhonePe Wallet, Amazon Pay Wallet. MDR applies at external merchants.
+- **Closed-loop PPI** — usable **only inside issuer's own ecosystem**. Zomato Money, Swiggy Money, Ola Money (early). RBI has minimal jurisdiction over closed-loop.
+- **Semi-closed-loop PPI** — usable across a **contracted merchant network**, not full-open. Sodexo food coupons is the classic example.
+
+### 4.3 · Properties
+
+- **Auth latency:** sub-second to 2 s.
+- **Money latency:** real-time to T+1 (issuer settles to merchant).
+- **MDR:** ~1.5% for open-loop wallets.
+
+### 4.4 · Failure modes
+
+- Insufficient wallet balance → decline.
+- KYC expired (RBI mandates periodic re-KYC) → wallet blocked until refreshed.
+- Wallet issuer downtime (rare — wallets are operationally reliable).
+
+### 4.5 · Why wallets declined + where they're still relevant
+
+Post-UPI, wallets collapsed in India — UPI directly debits bank accounts, cutting out the wallet middleman. Wallets still useful for:
+
+- **Refund locking** — merchant refunds to closed-loop wallet → customer uses it next time → retention play + zero-MDR next txn.
+- **Sub-optimal bank customers** on UPI (bank not supported / down).
+- **Loyalty / prepaid programmes** (gift cards, employee benefits).
+
+### 4.6 · Paytm Payments Bank collapse (2024) — concentration risk
+
+RBI restricted Paytm Payments Bank in early 2024 → Paytm wallets migrated to Axis / YES / SBM. Textbook example of concentration risk on a PPI issuer: single-bank dependency broke the entire wallet's operations for weeks.
+
+
 
 ---
 
 ## 5 · EMI (Equated Monthly Installments)
 
-_(pending)_
+Customer splits payment into monthly installments. Merchant gets full amount upfront (or after subvention offset); customer pays lender monthly.
+
+### 5.1 · Three flavours
+
+**Card-based EMI:**
+- Customer's credit-card issuer converts the txn into EMI at checkout.
+- Merchant integrates with issuer's EMI API via PSP.
+- Customer picks tenure, gets OTP, issuer creates EMI plan.
+- Merchant receives: full amount − MDR (~1.8–2.2%).
+- Customer pays: monthly installments to issuer with EMI interest (~13–18% APR, or subvented to 0%).
+
+**Cardless EMI (NBFC-backed):**
+- No credit card required. Customer applies at checkout with PAN + Aadhaar.
+- **Lender NBFC** (ZestMoney, EarlySalary, Cashe, Kissht, LendingKart, Flipkart's underlying NBFC) does instant credit check.
+- First-time onboarding: 30 s–days for underwriting. Repeat: sub-second.
+- Merchant receives: full amount − MDR (~2%) or − subvention (for no-cost EMI).
+
+**Bank-EMI on debit card:**
+- Some banks (HDFC, ICICI, Axis) offer EMI on debit — customer's savings balance is blocked, then EMI-ed. Rare but growing.
+
+### 5.2 · "No-cost EMI" — where the interest actually comes from
+
+Nothing is free — someone pays. Three payers:
+
+- **Merchant subvention** — merchant discounts the sticker price by the EMI interest so customer pays a flat monthly = product cost / tenure. Merchant's margin absorbs the interest.
+- **Manufacturer subvention** — brand pays (Apple + HDFC + Amazon "no-cost EMI" campaigns).
+- **Card issuer marketing budget** (rarer) — issuer funds it as a cashback offer.
+
+**Common trick:** the sticker price is silently inflated to include the interest, then "discounted" back to make it look free. RBI has flagged deceptive advertising and now mandates disclosure of the effective rate.
+
+**PayForge design lesson:** if we ever offer EMI, track **actual cost to merchant** (subvention line) separately in the ledger. Never pretend it is zero on our books.
+
+### 5.3 · Merchant economics
+
+- Regular EMI: MDR ~2%, no subvention.
+- No-cost EMI: MDR + subvention (~5–12% of the ticket depending on tenure). Very expensive per txn — but converts high-ticket sales that would otherwise abandon.
+
+
 
 ---
 
 ## 6 · BNPL (Buy Now Pay Later)
 
-_(pending)_
+Short-term credit at checkout — buy now, pay in 14–30 days or in 3-4 installments. No credit card required.
+
+### 6.1 · How BNPL differs from EMI
+
+| Aspect | EMI | BNPL |
+|--------|-----|------|
+| Tenure | 3–36 months | 14–30 days (Pay Later) or 3–4 installments (Split) |
+| Interest | 13–18% APR (or subvented) | 0% if paid on time; 24–36% if late |
+| Underwriting | Full credit check first time | Very light — mobile+Aadhaar KYC + behavioural scoring |
+| Ticket size | ₹5k–₹5L | ₹100–₹50k (small-ticket focus) |
+| Repayment | Auto-debit each month | Single bill at cycle end OR 3-4 split |
+
+### 6.2 · Examples
+
+- **Simpl** (India) — Pay Later, 15-day cycle.
+- **LazyPay** (PayU) — Pay Later + Later Split.
+- **Amazon Pay Later**, **Flipkart Pay Later**.
+- **Slice** (India) — card-like BNPL.
+- **Klarna, Affirm** (US/EU) — Split-Pay 4×.
+- **ZestMoney** (India) — hybrid EMI + BNPL.
+
+### 6.3 · Checkout flow
+
+1. Customer picks BNPL at checkout.
+2. First-time: quick KYC (mobile OTP + PAN + sometimes Aadhaar).
+3. NBFC underwrites in seconds using bureau data + behavioural signals.
+4. Approved → merchant paid immediately; customer's BNPL account gets the debit.
+5. Customer repays via UPI/card/netbanking at end of cycle.
+
+### 6.4 · Merchant economics
+
+- **MDR:** ~1.5–2% (slightly higher than UPI/debit due to underwriting cost baked in).
+- **AOV uplift:** removing "do I have money right now?" friction boosts conversion and average order value in impulse categories.
+
+### 6.5 · RBI 2022 restrictions
+
+RBI restricted non-bank prepaid wallets from being loaded with credit lines (2022) — killed a subclass of BNPL that funded wallet balances from credit lines (LazyPay's wallet model had to change). Legit BNPL today routes through **licensed NBFCs directly**, not wallet-mediated.
+
+### 6.6 · When BNPL fits vs EMI (merchant rule of thumb)
+
+- **Ticket ≥ ₹5000** and **infrequent** → card EMI.
+- **Ticket ₹100–₹5000** and **frequent / impulse** → BNPL.
+- **Ticket < ₹100** → UPI only, no credit product.
+
+BNPL is a **conversion tool** for small-ticket high-frequency categories: food delivery, fashion, gaming, groceries. EMI is a **conversion tool** for high-ticket infrequent categories: electronics, furniture, travel, education.
+
+Design mistake to avoid: don't offer EMI on ₹300 checkouts — clutters UI and confuses users.
+
+
 
 ---
 
-## 7 · Which method to accept when (merchant decision framework)
+## 7 · Which method to accept when — merchant decision framework
 
-_(pending)_
+No merchant accepts everything from day one. Choose based on customer segment, ticket size, unit economics, and regulatory scope.
+
+### 7.1 · Choose by ticket size
+
+| Ticket | First method | Fallbacks |
+|--------|--------------|-----------|
+| **< ₹500** | UPI | Wallets, BNPL, no card |
+| **₹500 – ₹5,000** | UPI | Debit card, BNPL |
+| **₹5,000 – ₹50,000** | UPI + Credit card | EMI (card-based), Cardless EMI |
+| **₹50,000 – ₹5L** | Credit card + EMI | Netbanking, Cardless EMI |
+| **> ₹5L** | Netbanking + RTGS + Credit card | EMI |
+
+### 7.2 · Choose by customer segment
+
+| Segment | Preferred methods | Why |
+|---------|-------------------|-----|
+| Tier-1 urban, tech-native | UPI, credit card | Speed + rewards |
+| Tier-2/3 India | UPI, debit card | UPI ubiquity, no credit access |
+| Older cohorts | Netbanking, cards | Trust in bank UI |
+| Students / young | UPI + BNPL | No credit card yet |
+| High-net-worth | Credit card, EMI, netbanking | Rewards + high ticket |
+| International customers | Credit card, PayPal | UPI not yet global-default |
+
+### 7.3 · Choose by category
+
+| Category | Must accept | Should offer |
+|----------|-------------|--------------|
+| Food delivery, quick commerce | UPI, BNPL | Wallets |
+| Fashion, small e-comm | UPI, cards, BNPL | Wallets, PPI |
+| Electronics, appliances | UPI, cards, **EMI (card+cardless)** | BNPL for accessories |
+| Travel, hotels | Cards, UPI, EMI, netbanking | Wallets for refunds |
+| Education, insurance, tax | Netbanking, cards, UPI | AutoPay for premiums |
+| Subscriptions | UPI AutoPay, card e-Mandate | Wallets |
+
+### 7.4 · Choose by unit economics
+
+- **Low margin (< 10%):** minimize MDR → UPI first, restrict card use, no EMI subvention.
+- **Mid margin (10–30%):** accept UPI + cards + BNPL, absorb MDR.
+- **High margin (> 30%):** offer EMI + no-cost EMI as conversion tools, absorb subvention.
+
+### 7.5 · PayForge's phased method rollout
+
+- **Phase 4 (Payment Engine):** cards + UPI as first two methods. State machine, idempotency, mock PSP.
+- **Phase 7+ (post-Ledger + Webhook):** add wallets, netbanking, EMI, BNPL as new connectors on the same engine.
+- **Not day-one:** international UPI, UPI 123Pay, feature-phone flows.
+
+
 
 ---
 
 ## 8 · What I still don't understand
 
-_(to fill at end)_
+Vaibhaw to fill honestly after re-reading. Coach will close gaps before Day 3.
+
+Candidate gap areas to consider:
+
+- ISO 8583 fields I'd need to know (or not) at PayForge's abstraction level.
+- Exactly which network calls (e.g. VTS API for tokenization) belong at merchant vs PSP layer.
+- UPI mandate lifecycle (create → suspend → revoke → expire) — need a state diagram of my own.
+- BNPL / EMI economics — subvention accounting on the ledger is still fuzzy.
+- Netbanking reconciliation without webhooks — practical fallback path.
+- PPI KYC re-verification cycles (RBI Master Directions detail).
+- Failure retry policies per method — how many retries, over what window, before terminal.
+
+- ...
+- ...
+
+**Instruction to future me:** don't skip. Naming the gap is 90% of closing it.
+
