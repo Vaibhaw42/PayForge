@@ -509,13 +509,248 @@ stateDiagram-v2
 
 ## 5 · Refund lifecycle
 
-_(pending)_
+### 5.1 · Refund is a first-class object
+
+A refund is a **new row** with its own id, its own state machine, its own ledger entries. It **does NOT mutate the payment intent** — the intent stays `SUCCEEDED` forever.
+
+```
+payment_intents
+  id: pi_abc123
+  amount_minor: 100000        (₹1000)
+  state: SUCCEEDED            (unchanged after refund)
+
+refunds
+  id: re_xyz789
+  payment_intent_id: pi_abc123
+  amount_minor: 40000         (₹400 partial)
+  state: SUCCEEDED
+  reason: 'customer_request'
+```
+
+### 5.2 · Refund state machine (unified across methods)
+
+```mermaid
+stateDiagram-v2
+  [*] --> PENDING: refund() called
+  PENDING --> PROCESSING: PSP accepted
+  PROCESSING --> SUCCEEDED: rail confirms credit to customer
+  PROCESSING --> FAILED: rail rejects OR technical failure
+  PROCESSING --> DEEMED_APPROVE: rail timeout (UPI mostly)
+  DEEMED_APPROVE --> SUCCEEDED
+  DEEMED_APPROVE --> FAILED
+  SUCCEEDED --> [*]
+  FAILED --> [*]
+```
+
+Method-specific timings inside PROCESSING:
+
+- **Card refund** — 5–7 business days visible to customer (issuer batches + statement update).
+- **UPI refund** — real-time (seconds).
+- **Netbanking refund** — T+1 typical.
+- **Wallet refund** — sub-second to real-time.
+
+### 5.3 · Partial refunds — the invariant
+
+Multiple partial refunds allowed against one payment intent.
+
+**Invariant:** `SUM(refunds WHERE state ∈ {PENDING, PROCESSING, SUCCEEDED, DEEMED_APPROVE}).amount ≤ payment_intent.amount`
+
+**Concurrency-safe check + lock (Phase 4 code):**
+
+```ts
+begin transaction;
+  select amount_minor from payment_intents where id = ? for update;
+  select coalesce(sum(amount_minor), 0) from refunds
+    where payment_intent_id = ? and state != 'FAILED';
+  if (existing_sum + requested > total) throw RefundExceedsCaptured;
+  insert into refunds (...);
+commit;
+```
+
+Concurrent refund requests without a lock would each read "remaining = ₹700" simultaneously → both pass validation → double refund. `FOR UPDATE` serializes them.
+
+**Also include PENDING/PROCESSING refunds in the sum.** Otherwise two concurrent refunds each PENDING both pass and both succeed later.
+
+### 5.4 · Refund reason codes (audit-mandatory)
+
+Every refund carries a `reason`:
+
+- `customer_request` — normal cancel
+- `duplicate_charge` — merchant charged twice by mistake
+- `fraudulent` — merchant detected fraud post-capture
+- `product_not_delivered`
+- `service_not_provided`
+- `agreed_via_support`
+
+RBI + PA agreements require merchant to store reason + supporting evidence for 5+ years. Becomes evidence if chargeback comes later.
+
+### 5.5 · Refund and MDR
+
+Original MDR is **not refunded to merchant**. Merchant eats:
+
+- Original MDR on the ₹1000 capture (~₹23).
+- Sometimes a small refund-processing fee (~₹5–15).
+
+Ledger records **refund_expense** as a separate posting from payment posting — never netted.
+
+### 5.6 · Instant refund vs standard refund
+
+Some PSPs (Razorpay, Cashfree) offer **instant refund** — credit shows on customer's card in minutes instead of 5–7 days. Uses IMPS to push credit directly, bypassing card rails.
+
+- Costs merchant extra (~₹5–10 per instant refund).
+- Optional flag on refund call.
+- Not always available — customer's issuer must support instant credit.
+
+
 
 ---
 
 ## 6 · Chargeback + dispute lifecycle
 
-_(pending)_
+### 6.1 · Chargeback ≠ refund — memorize this table
+
+|  | **Refund** | **Chargeback** |
+|--|-----------|----------------|
+| Initiated by | Merchant | Customer via issuer |
+| Trigger | Merchant clicks refund | Customer disputes on statement |
+| Timing | Merchant's choice | Up to 120 days post-txn (network + reason dependent) |
+| Cost to merchant | ₹0–15 (instant refund fee optional) | ₹500–2000 fee + risk of losing amount |
+| Merchant action | Just call API | Submit evidence within 7–14 days or lose |
+| Outcome | Almost always succeeds | Uncertain — win, lose, or arbitrate |
+| Nature | Cooperative | **Adversarial** |
+| State machine | 5-state simple | 8-state adversarial |
+
+Diagnostic: customer contacted **merchant support** → refund. Customer contacted **their bank/issuer** → chargeback. Same money returning, completely different rails.
+
+### 6.2 · Chargeback state machine
+
+```mermaid
+stateDiagram-v2
+  [*] --> DISPUTE_OPENED: issuer sends chargeback via network
+  DISPUTE_OPENED --> UNDER_REVIEW: merchant reviewing evidence
+  UNDER_REVIEW --> REPRESENTED: merchant submits defense
+  UNDER_REVIEW --> ACCEPTED: merchant accepts, writes off
+  REPRESENTED --> WON: issuer/network agrees with merchant
+  REPRESENTED --> LOST: issuer/network sides with customer
+  LOST --> ARBITRATED: merchant escalates (rare, costly)
+  ARBITRATED --> WON_FINAL
+  ARBITRATED --> LOST_FINAL
+  ACCEPTED --> [*]
+  WON --> [*]
+  LOST --> [*]
+  WON_FINAL --> [*]
+  LOST_FINAL --> [*]
+```
+
+Timeline:
+
+- Customer initiates dispute with issuer up to 120 days post-txn.
+- Issuer sends chargeback → network → acquirer → PSP → merchant webhook.
+- Merchant has ~7–14 days to respond with **representment** (evidence).
+- Network/issuer reviews → win or lose.
+- If lost, merchant can arbitrate — ₹5k–₹50k filing fee, rarely successful.
+
+### 6.3 · Chargeback reason codes (subset)
+
+| Category | Example reason | Merchant defense |
+|----------|----------------|-------------------|
+| **Fraud** | Unauthorized transaction | Prove 3DS-authenticated → issuer eats loss |
+| **Consumer** | Product not received | Prove delivery — shipping tracker, signed POD |
+| | Not as described | Prove item matches listing |
+| | Duplicate charge | Prove two separate orders |
+| **Authorization** | No authorization | Prove auth code from network |
+| **Processing** | Incorrect amount | Prove receipt matches capture |
+| **Cancellation** | Credit not processed | Prove refund was issued |
+
+Winning example — Q-D3-14: customer disputes "product not received" 45 days later; merchant submits GPS delivery tracking + signed POD → REPRESENTED → WON. Merchant keeps the money. Chargeback fee may still apply (often non-refundable even on win).
+
+### 6.4 · Chargeback economics — merchant eats it (mostly)
+
+For a ₹1000 lost chargeback:
+
+| Line item | Amount |
+|-----------|--------|
+| Original MDR (not refunded) | ~₹23 |
+| Chargeback fee | ₹500–2000 |
+| Refund amount to customer | ₹1000 |
+| Fulfillment cost (product shipped) | ₹500 COGS |
+| **Net loss** | **₹1000 + fees + goods** |
+
+### 6.5 · Chargeback rate thresholds (Visa VDMP, roughly)
+
+| Rate | Tier | Consequences |
+|------|------|--------------|
+| < 0.65% count / 0.9% $ | Normal | OK |
+| 0.9%–1.8% | Early-warning | Fines, forced remediation, higher MDR |
+| > 1.8% | Excessive | Aggressive fines, possible termination |
+
+**At 1.5% (early-warning tier), expect:**
+
+- PSP flags merchant + tightens surveillance.
+- **Rolling reserve / holdback** — PSP holds 5–10% of settlements for 90–180 days.
+- MDR bumps 0.3–0.7% under network monitoring programs (Visa VDMP, MC ECP).
+- Monthly network fines ($25k–$50k in the excessive tier).
+- Two-three months in the tier without improvement → **PSP drops merchant**.
+
+### 6.6 · Chargeback prevention tactics
+
+- **Enforce 3DS on all card txns** — fraud chargebacks flip to issuer.
+- **Shipping tracking + delivery confirmation** — evidence for "not received" disputes.
+- **Clear billing descriptor** — `PAYFORGE*ORDER8842` beats `RANDOM STRING` — customer recognizes on statement.
+- **Refund quickly on complaint** — customer who gets refund in 24 h doesn't chargeback.
+- **Fraud scoring at auth** — decline high-risk txns before capture.
+
+### 6.7 · How chargebacks land in PayForge
+
+Chargeback events come as webhooks from PSP:
+
+```json
+{
+  "event": "dispute.opened",
+  "payment_intent_id": "pi_abc123",
+  "dispute_id": "dp_xyz",
+  "amount_minor": 100000,
+  "reason_code": "unauthorized",
+  "deadline": "2026-08-15T00:00:00Z",
+  "network": "visa"
+}
+```
+
+Merchant/PayForge actions:
+
+1. Persist dispute row.
+2. Notify merchant admin (dashboard alert + email).
+3. **Freeze corresponding funds** in ledger (Phase 5).
+4. Ledger: reverse the original payment posting + apply chargeback fee.
+
+Dispute records persist FOREVER — even after resolution. Historical view is required for compliance + fraud analytics.
+
+### 6.8 · Ledger effects — refund vs chargeback
+
+| Event | Journal entry (postings) | Net on merchant_payable |
+|-------|--------------------------|-------------------------|
+| Payment SUCCEEDED | DR customer_receivable / CR merchant_payable | +amount |
+| MDR fee | DR fee_expense / CR merchant_payable | −MDR |
+| Refund SUCCEEDED | DR merchant_payable / CR customer_receivable | −amount |
+| Chargeback DISPUTE_OPENED | DR merchant_payable / CR merchant_payable_frozen | 0 (moved, not lost) |
+| Chargeback LOST | DR merchant_payable_frozen / CR customer_receivable + chargeback_fee expense | −amount − fee |
+| Chargeback WON | Reverse the freeze | 0 (unfrozen back to merchant_payable) |
+
+For a **₹1000 payment + full ₹1000 refund**:
+
+- 2 journal entries (payment + refund) — plus fee entries in reality.
+- 4 postings minimum (each entry = 1 DR + 1 CR) — 6+ postings once MDR is included.
+- Net effect on `merchant_payable`: `0` for the customer flow. Net effect including MDR: `−₹23` (merchant loses fee on refund).
+
+**Terminology to keep separate:**
+
+- `refunds` table — 1 row per refund object.
+- `journal_entries` table — 1 row per event.
+- `postings` table — 1 row per DR or CR line (2+ per journal entry).
+
+Three different granularities.
+
+
 
 ---
 
