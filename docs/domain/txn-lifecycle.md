@@ -74,7 +74,7 @@ If your process crashes, the DB state + Kafka event log are the source of truth.
 
 ## 2 · Unified payment intent state model
 
-### 2.1 · The 7 states — industry standard
+### 2.1 · The 8 states — industry standard
 
 Stripe's PaymentIntent vocabulary became the de-facto standard; Razorpay, Adyen, Cashfree all use variants. PayForge follows.
 
@@ -85,14 +85,17 @@ stateDiagram-v2
   REQUIRES_CONFIRMATION --> REQUIRES_ACTION: needs 3DS / UPI PIN / bank OTP
   REQUIRES_CONFIRMATION --> PROCESSING: confirm() (no action needed)
   REQUIRES_ACTION --> PROCESSING: customer completed challenge
-  PROCESSING --> SUCCEEDED: PSP confirms success
+  PROCESSING --> REQUIRES_CAPTURE: auth-only flow, auth approved
+  REQUIRES_CAPTURE --> PROCESSING: capture() called
+  PROCESSING --> SUCCEEDED: capture confirmed
   PROCESSING --> FAILED: PSP confirms failure
   PROCESSING --> REQUIRES_PAYMENT_METHOD: soft failure (retry with different method)
   SUCCEEDED --> [*]
   FAILED --> [*]
-  REQUIRES_PAYMENT_METHOD --> CANCELED: merchant cancels
-  REQUIRES_CONFIRMATION --> CANCELED: merchant cancels
-  REQUIRES_ACTION --> CANCELED: merchant / customer aborts
+  REQUIRES_PAYMENT_METHOD --> CANCELED
+  REQUIRES_CONFIRMATION --> CANCELED
+  REQUIRES_ACTION --> CANCELED
+  REQUIRES_CAPTURE --> CANCELED: void (auth reversal)
   CANCELED --> [*]
 ```
 
@@ -102,11 +105,14 @@ stateDiagram-v2
 | `REQUIRES_CONFIRMATION` | Method attached; awaiting merchant confirm | No |
 | `REQUIRES_ACTION` | **Ball is in customer's court** — 3DS OTP, UPI PIN screen, netbanking OTP | No |
 | `PROCESSING` | Confirmed; PSP working the wire (auth/capture in flight) | No |
+| `REQUIRES_CAPTURE` | Auth-only flow: auth approved (hold placed); waiting for merchant `capture()` | No |
 | `SUCCEEDED` | Money confirmed captured | **Yes** |
 | `FAILED` | Auth declined / final failure | **Yes** |
-| `CANCELED` | Merchant / customer aborted before PROCESSING | **Yes** |
+| `CANCELED` | Merchant / customer aborted before capture (includes auth reversal / void) | **Yes** |
 
-Memory hook: **REQUIRES_ACTION = customer's turn. PROCESSING = system's turn.**
+Memory hooks:
+- **REQUIRES_ACTION = customer's turn.** PROCESSING / REQUIRES_CAPTURE = system's / merchant's turn.
+- **REQUIRES_CAPTURE only exists for auth-only (delayed-capture) flows** — e-commerce sale flow skips it entirely and goes PROCESSING → SUCCEEDED directly.
 
 ### 2.2 · Merchant contract vs internal state
 
@@ -116,9 +122,10 @@ The 7 states are the **external merchant contract**. Internally PayForge may tra
 
 ### 2.3 · Cancel semantics
 
-`cancel()` is legal only in **pre-flight** states:
+`cancel()` is legal in **pre-flight** and **auth-only-before-capture** states:
 
-- `REQUIRES_PAYMENT_METHOD`, `REQUIRES_CONFIRMATION`, `REQUIRES_ACTION` → cancel succeeds
+- `REQUIRES_PAYMENT_METHOD`, `REQUIRES_CONFIRMATION`, `REQUIRES_ACTION` → cancel succeeds (nothing sent to wire yet)
+- `REQUIRES_CAPTURE` → cancel triggers **auth reversal / void** — hold is released; state moves to CANCELED
 - `PROCESSING`, `SUCCEEDED`, `FAILED`, `CANCELED` → cancel fails
 
 Why the cutoff at `PROCESSING`? Once auth is fired to PSP → forwarded to network → issuer, the message is in flight across banks; there is no cancel button on the wire. Only remedy after PROCESSING is: wait for terminal state, then refund if it SUCCEEDED.
@@ -181,7 +188,167 @@ We never touch `orders`. Merchant's problem.
 
 ## 3 · Card txn state transitions
 
-_(pending)_
+### 3.1 · Card sub-states inside PROCESSING
+
+External state (merchant-facing) is one of the 8. Internal card sub-states inside PROCESSING are finer:
+
+```mermaid
+stateDiagram-v2
+  [*] --> AUTH_PENDING: confirm sent to PSP
+  AUTH_PENDING --> AUTH_APPROVED: issuer approves (hold placed)
+  AUTH_PENDING --> AUTH_DECLINED: issuer declines
+  AUTH_APPROVED --> CAPTURE_PENDING: capture() called (or auto for sale flow)
+  CAPTURE_PENDING --> CAPTURED: capture confirmed
+  CAPTURE_PENDING --> CAPTURE_FAILED: rare technical failure
+  CAPTURED --> SETTLEMENT_PENDING: EOD batch queued
+  SETTLEMENT_PENDING --> SETTLED: T+1 RTGS completes
+  AUTH_APPROVED --> VOIDED: void() before capture
+  AUTH_APPROVED --> EXPIRED: no capture within TTL (5–7 days)
+  AUTH_DECLINED --> [*]
+  VOIDED --> [*]
+  EXPIRED --> [*]
+```
+
+Mapping internal → external:
+
+| Internal | External |
+|----------|----------|
+| AUTH_PENDING | PROCESSING |
+| AUTH_APPROVED (auth-only) | REQUIRES_CAPTURE |
+| AUTH_APPROVED → CAPTURE_PENDING (sale flow) | PROCESSING |
+| CAPTURED, SETTLEMENT_PENDING, SETTLED | SUCCEEDED |
+| AUTH_DECLINED, CAPTURE_FAILED | FAILED |
+| VOIDED, EXPIRED | CANCELED |
+
+### 3.2 · Sale vs Auth-only vs Delayed capture
+
+**Sale (auth + capture in one call)** — the e-commerce default. Merchant sends `charge()`; PSP does auth then capture immediately. Intent transitions `PROCESSING → SUCCEEDED` in one round-trip.
+
+**Auth-only (delayed capture)** — merchant calls `authorize()` → issuer holds funds → intent `REQUIRES_CAPTURE`. Later merchant calls `capture()` → intent `PROCESSING → SUCCEEDED`.
+
+Where auth-only is used:
+
+- **Hotels** — auth at check-in, capture at check-out.
+- **Ride-hailing (Uber)** — auth ₹100 hold, capture actual fare.
+- **Marketplaces** — auth on order, capture on ship.
+- **Petrol pumps** — auth ₹1 validity check, capture actual fuel.
+
+Capture window is 5–7 days for retail, up to 30 days for travel & entertainment. After the window, uncaptured auth **auto-expires** — the hold drops off the customer's card.
+
+**Partial capture** — merchant can capture LESS than authorized (auth ₹5000, capture ₹3200). Remaining hold drops after window or explicit void.
+
+**Multi-capture** (rare) — capture in chunks summing ≤ authorized. Complex; PayForge won't support day-one.
+
+### 3.3 · Void vs Refund — timing decides which
+
+| Action | When legal | On the wire | Customer sees |
+|--------|-----------|-------------|---------------|
+| **Void (auth reversal)** | After AUTH_APPROVED, **before capture** | Auth reversal message; hold released | Hold drops off card in minutes to hours |
+| **Refund** | After CAPTURED | New refund txn, opposite direction, T+N | Refund credited in 5–7 business days |
+
+**Always prefer void if capture hasn't happened.** Void is fast + free; refund is slow + costs rails fees (and merchant often loses MDR on refund).
+
+**Rule:**
+- Cancel before shipping, capture not done → **void**
+- Cancel after shipping, capture done → **refund**
+
+### 3.4 · Auth expiration
+
+Auths that are approved but never captured within TTL auto-expire:
+
+- Retail: 5–7 days.
+- Travel & entertainment (T&E MCC): up to 30 days.
+- Issuer drops the hold automatically; customer's available balance restored.
+
+**Design constraint for PayForge:** every AUTH_APPROVED needs an `expires_at` timestamp and a scheduled reconciliation job flipping expired auths to terminal state.
+
+### 3.5 · Decline codes → state transitions
+
+Different decline codes = different downstream behavior:
+
+| Code | Meaning | State | Merchant action |
+|-----:|---------|-------|-----------------|
+| 51 | Insufficient funds | FAILED (hard) | Don't retry same card |
+| 05 | Do not honor (opaque, most common) | FAILED (hard) | Don't retry; suggest other method |
+| 14 | Invalid card | FAILED (hard) | Typo? |
+| 54 | Expired card | FAILED (hard) | Update details |
+| 41 / 43 | Lost / stolen | FAILED (hard) + block | Never retry; alert customer |
+| 61 | Exceeds per-txn amount limit | FAILED (hard) | Suggest lower amount |
+| 65 | Daily activity count exceeded | FAILED (hard, retry tomorrow) | Wait & retry next day |
+| 91 | Issuer unavailable | FAILED (soft, retryable) | Smart-route to different acquirer/scheme |
+| 96 | System malfunction (network/PSP) | FAILED (soft, retryable) | Exp backoff retry |
+
+**Two flavors of FAILED:**
+
+- **Hard failure** — do not retry with same card. Show customer, offer alternate method.
+- **Soft failure** — retryable. PA smart-routes across acquirers, or exp-backoff for transient issues.
+
+**Retry nuance:** for code 91 (issuer down), same-route retry likely fails — use **smart routing** (different scheme/acquirer). For code 96 (transient glitch), exp backoff on same route is fine. **Don't blanket-retry on any FAILED.**
+
+**Persistence contract for PayForge Phase 4:**
+
+```ts
+{
+  status: 'FAILED',
+  reason_code: '91',
+  reason: 'issuer_unavailable',
+  is_retryable: true,
+  suggested_action: 'route_alternative_scheme'  // or 'exponential_backoff' or 'no_retry'
+}
+```
+
+### 3.6 · 3DS state transitions
+
+3DS happens inside the confirm → PROCESSING transition:
+
+```
+confirm() → PROCESSING → 3DS challenge → REQUIRES_ACTION (customer sees OTP)
+REQUIRES_ACTION → customer types OTP → 3DS validated → PROCESSING (resume)
+PROCESSING → issuer auth → AUTH_APPROVED / AUTH_DECLINED
+```
+
+**3DS 2.0 frictionless flow** — issuer's risk engine trusts device+behavior → no OTP shown → skips REQUIRES_ACTION entirely, stays in PROCESSING throughout. Still counts as 3DS-authenticated (liability shift still applies).
+
+**Customer abandonment** — customer stalls on OTP screen for 5 min then closes tab → timeout → FAILED with `reason=3ds_timeout`.
+
+### 3.7 · Full card txn timeline (real world, e-commerce sale)
+
+```
+T=0s      : confirm() → PROCESSING
+T=0.1s    : PSP → PG → acquirer → network → issuer
+T=1s      : issuer responds "approved, OTP required" → REQUIRES_ACTION
+T=1.5s    : customer sees OTP screen
+T=30s     : customer types OTP → REQUIRES_ACTION → PROCESSING
+T=32s     : issuer confirms auth → AUTH_APPROVED (external still PROCESSING)
+T=32s     : PSP auto-fires capture (sale) → CAPTURE_PENDING
+T=33s     : capture confirmed → CAPTURED → SUCCEEDED (external)
+--- merchant sees "success" ---
+T=EOD     : clearing batch → SETTLEMENT_PENDING (external still SUCCEEDED)
+T+1 day   : RTGS bank-to-bank → SETTLED
+T+2 day   : PA payout to merchant bank → merchant has usable money
+```
+
+Merchant sees ONE external transition (PROCESSING → SUCCEEDED). Internally 6+ sub-states passed. The whole clearing/settlement/payout tail happens **after** merchant already thinks it succeeded.
+
+### 3.8 · Refund state transitions
+
+Refund is a **new state machine** on a separate `refund` object — it does NOT modify the payment intent's terminal state.
+
+```mermaid
+stateDiagram-v2
+  [*] --> PENDING: refund() called
+  PENDING --> PROCESSING: PSP accepts request
+  PROCESSING --> SUCCEEDED: issuer confirms credit
+  PROCESSING --> FAILED: issuer rejects (rare) OR technical
+  SUCCEEDED --> [*]
+  FAILED --> [*]
+```
+
+- **Partial refunds** — sum of refund amounts ≤ captured amount. Multiple partial refunds allowed against one payment intent.
+- **Payment intent stays SUCCEEDED forever.** Compensating rows accumulate in the `refunds` table.
+- Refund settlement takes ~5–7 business days visible to customer (issuer processing).
+
+
 
 ---
 
