@@ -354,7 +354,156 @@ stateDiagram-v2
 
 ## 4 · UPI txn state transitions
 
-_(pending)_
+### 4.1 · UPI is different — no auth/capture split
+
+Cards have distinct auth and capture. UPI does **debit + credit in one atomic transaction on the wire**. There is no hold-then-capture — money moves in one shot at NPCI.
+
+Consequences:
+
+- **No REQUIRES_CAPTURE state** for UPI push txns. It is `PROCESSING → SUCCEEDED` or `PROCESSING → FAILED`.
+- **No void** — nothing to void; either the atomic txn happened or it didn't.
+- **No 5–7 day capture window** — settles in seconds.
+- **Real-time settlement** — merchant's beneficiary bank sees credit in the same 2–5 s window.
+
+### 4.2 · UPI sub-states inside PROCESSING
+
+```mermaid
+stateDiagram-v2
+  [*] --> INITIATED: sent to PSP Bank
+  INITIATED --> AT_NPCI: PSP Bank forwards to NPCI switch
+  AT_NPCI --> DEBIT_PENDING: NPCI dispatches debit to remitter bank
+  DEBIT_PENDING --> DEBIT_SUCCESS: remitter bank confirms debit
+  DEBIT_PENDING --> DEBIT_FAILED: remitter rejects (insuff funds, PIN wrong, limit)
+  DEBIT_SUCCESS --> CREDIT_PENDING: NPCI dispatches credit to beneficiary
+  CREDIT_PENDING --> CREDIT_SUCCESS: beneficiary bank confirms
+  CREDIT_PENDING --> CREDIT_FAILED: beneficiary rejects (rare)
+  CREDIT_FAILED --> AUTO_REVERSED: NPCI auto-reverses the debit
+  CREDIT_PENDING --> DEEMED_APPROVE: credit confirmation timeout (U69)
+  CREDIT_SUCCESS --> [*]
+  DEBIT_FAILED --> [*]
+  AUTO_REVERSED --> [*]
+  DEEMED_APPROVE --> CREDIT_SUCCESS: late confirmation arrives (up to 24h)
+  DEEMED_APPROVE --> AUTO_REVERSED: NPCI reverses after window (~T+2h)
+```
+
+Mapping internal → external:
+
+| Internal | External |
+|----------|----------|
+| INITIATED, AT_NPCI, DEBIT_PENDING, CREDIT_PENDING | PROCESSING |
+| **DEEMED_APPROVE** | **PROCESSING** (still not terminal — awaiting resolution) |
+| CREDIT_SUCCESS | SUCCEEDED |
+| DEBIT_FAILED | FAILED |
+| AUTO_REVERSED | FAILED (with `reason=auto_reversed`) |
+
+**Design rule (Phase 4):** DEEMED_APPROVE must not transition to SUCCEEDED externally. Merchant is told PROCESSING until the state is truly resolved. Never fulfill on DEEMED_APPROVE.
+
+### 4.3 · U69 deemed-approve — the reconciliation state
+
+Payer's bank debited but the credit confirmation timed out. Two paths:
+
+- Path A — **late confirmation** arrives within 24 h → CREDIT_SUCCESS → SUCCEEDED
+- Path B — **no confirmation** by NPCI's fixed window (~T+2 h) → NPCI auto-reverses the debit → AUTO_REVERSED → FAILED
+
+PayForge behavior in DEEMED_APPROVE:
+
+1. External state stays `PROCESSING`.
+2. Start a **polling job** — call PSP's `/status?tr=...` every 5–10 s for up to 15 min, then exponential backoff.
+3. **Do not fulfill the order.** Merchant sees processing.
+4. On EOD reconciliation, sweep any residual DEEMED_APPROVE against PSP's settlement file → resolve to terminal.
+
+Customer UX: customer sees "debited but processing" in their bank app. Show a status page with real-time updates. Never lie ("payment received") until CREDIT_SUCCESS.
+
+### 4.4 · UPI response codes → state transitions
+
+| Code | Meaning | Internal | External | Retryable? |
+|------|---------|----------|----------|------------|
+| **00** | Success | CREDIT_SUCCESS | SUCCEEDED | N/A |
+| **U16** | Payer bank unavailable | DEBIT_FAILED | FAILED (soft) | Yes — retry via different app/bank |
+| **U28** | Insufficient funds | DEBIT_FAILED | FAILED (**hard**) | **No** — balance won't change on retry; show customer, suggest lower amount / other method |
+| **U54** | PIN attempts exceeded | DEBIT_FAILED | FAILED (hard) | Wait period enforced |
+| **U66** | Beneficiary bank down | CREDIT_FAILED → AUTO_REVERSED | FAILED (soft) | Retry with different beneficiary VPA if available |
+| **U69** | Deemed approve — no credit confirmation | DEEMED_APPROVE | PROCESSING | Poll + wait |
+| **ZM** | PIN incorrect | DEBIT_FAILED | FAILED (soft — customer retries with correct PIN) | User re-attempts |
+| **BT** | Timeout at any hop | DEEMED_APPROVE | PROCESSING | Poll |
+
+**Retry mental model:** ask *"would waiting 30 s and retrying help?"* — if no, HARD. If yes, SOFT. "Retryable due to fund issues" is a contradiction — fund issues need customer action, not a retry.
+
+**Rule:** never trust the immediate response as source of truth. UPI response codes are hints; the actual state must be confirmed via status polling.
+
+### 4.5 · UPI refund state transitions
+
+UPI refunds are **real-time** (unlike card 5–7 days).
+
+```mermaid
+stateDiagram-v2
+  [*] --> PENDING: refund() called
+  PENDING --> AT_NPCI: PSP dispatched to NPCI
+  AT_NPCI --> CREDIT_TO_PAYER_PENDING: NPCI dispatched credit to payer's bank
+  CREDIT_TO_PAYER_PENDING --> SUCCEEDED: payer's bank confirms credit
+  CREDIT_TO_PAYER_PENDING --> FAILED: payer's bank rejects (very rare)
+  CREDIT_TO_PAYER_PENDING --> DEEMED_APPROVE: U69 pattern on refunds too — poll
+  SUCCEEDED --> [*]
+  FAILED --> [*]
+```
+
+Refunds can also hit DEEMED_APPROVE (rare). Same polling+reconciliation playbook. Partial refunds allowed, same as cards.
+
+### 4.6 · UPI AutoPay mandate lifecycle — a SEPARATE state machine
+
+The mandate is its own object with its own states — distinct from the debit-execution state machine. Mixing the two is a common bug.
+
+```mermaid
+stateDiagram-v2
+  [*] --> AWAITING_APPROVAL: create()
+  AWAITING_APPROVAL --> ACTIVE: payer approves with PIN
+  AWAITING_APPROVAL --> REJECTED: payer rejects
+  AWAITING_APPROVAL --> EXPIRED: no action within timeout
+  ACTIVE --> PAUSED: merchant pauses
+  PAUSED --> ACTIVE: merchant resumes
+  ACTIVE --> REVOKED: payer revokes (via TPAP)
+  ACTIVE --> EXPIRED: mandate end-date passes
+  PAUSED --> REVOKED
+  PAUSED --> EXPIRED
+  REJECTED --> [*]
+  REVOKED --> [*]
+  EXPIRED --> [*]
+```
+
+**Two levels of state — keep them separate:**
+
+- **Mandate state** — is the mandate itself alive? (ACTIVE, PAUSED, REVOKED, EXPIRED)
+- **Debit state** — did a particular monthly debit succeed? Uses the standard payment intent state machine.
+
+**A failed debit does NOT change mandate state.** Otherwise one missed month would kill a Netflix subscription. Mandate stays ACTIVE; debit intent goes FAILED; merchant retries per its policy.
+
+**Debit execution rules against a mandate:**
+
+- Debit auto-declined if mandate is not ACTIVE.
+- Debit auto-declined if amount > mandate cap.
+- Debit auto-declined if frequency window not open (a "monthly" mandate cannot fire twice in a cycle).
+- **Pre-debit notification rule** — for amount above RBI thresholds, customer must be notified 24 h before via TPAP push / SMS.
+
+**Design implication for PayForge (Phase 4/6):**
+
+- `mandates` table stores mandate lifecycle.
+- `payment_intents` table stores individual debit executions, each with `mandate_id` FK.
+- **Never update mandate state on debit failure.** Only on pause / revoke / expire.
+- Retry policy configurable per mandate (Netflix-style: 3-day retry, 3 attempts, then dunning email).
+
+### 4.7 · Card vs UPI — state model diff summary
+
+| Aspect | Card | UPI |
+|--------|------|-----|
+| Auth/capture split | Yes | No (atomic) |
+| REQUIRES_CAPTURE state | Yes (auth-only) | No |
+| Void | Yes (before capture) | No |
+| Refund latency | 5–7 days | Real-time |
+| Settlement | T+1 | Real-time |
+| Deemed-approve pattern | Rare | Common (U69) |
+| Recurring mechanism | e-Mandate on card | UPI AutoPay mandate |
+
+
 
 ---
 
