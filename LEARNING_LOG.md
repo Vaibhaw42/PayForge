@@ -131,3 +131,99 @@ Format per entry:
 - `docs/domain/payment-methods.md` — full write-up: 8 sections spanning cards, UPI, netbanking, wallets, EMI, BNPL, merchant decision framework, and open questions.
 
 **Next session:** Day 3 — **Transaction lifecycle + states** (`docs/domain/txn-lifecycle.md`). State machines, retry semantics, idempotency contracts. Before starting Day 3, fill Section 8 of `payment-methods.md` with honest gaps.
+
+---
+
+## 2026-07-23 · Phase -1 · Day 3 · Transaction Lifecycle + States
+
+Biggest domain day so far. Direct input to Phase 4 (Payment Engine) code contracts.
+
+**What I learned (in my own words, corrected via Q&A):**
+
+**Foundations:**
+- Booleans cannot model real payments (10+ states, post-success events like chargebacks). State machines are non-negotiable.
+- **The single most important rule: money is never un-moved.** Refund and chargeback are new rows, not row updates. Ledger is append-only.
+- **Persist state locally, don't derive from PSP on every read.** PSP is source of truth for the wire; my DB is source of truth for my system.
+
+**8-state unified payment intent model** (learned mid-quiz that I'd taught 7 initially, then corrected to 8 with REQUIRES_CAPTURE for auth-only flows):
+- REQUIRES_PAYMENT_METHOD → REQUIRES_CONFIRMATION → REQUIRES_ACTION → PROCESSING → SUCCEEDED / FAILED / CANCELED. REQUIRES_CAPTURE for auth-only.
+- Cancel legal in pre-flight + REQUIRES_CAPTURE only. PROCESSING onwards = only refund can undo.
+- Payment intent ≠ order ≠ ledger entry. Three separate domains, linked by foreign keys.
+
+**Card sub-states inside PROCESSING:**
+- AUTH_PENDING → AUTH_APPROVED → CAPTURE_PENDING → CAPTURED → SETTLEMENT_PENDING → SETTLED
+- Sale (auth+capture in one) vs Auth-only (capture separate). Auth-only used by hotels, Uber, marketplaces, petrol pumps.
+- Void (auth reversal) is cheap + fast; refund is slow + expensive. Prefer void when capture hasn't happened.
+- Decline codes: hard vs soft failed. 51/05/14/54 = hard. 91/96 = soft. **U28 (insufficient funds) is HARD, not soft** — retry doesn't create money.
+
+**UPI state transitions:**
+- No auth/capture split — atomic on the wire. No REQUIRES_CAPTURE, no void.
+- Sub-states: INITIATED → AT_NPCI → DEBIT_PENDING → CREDIT_PENDING → CREDIT_SUCCESS / DEEMED_APPROVE / AUTO_REVERSED.
+- **U69 deemed-approve stays external PROCESSING** — never fulfill. Poll status API. NPCI auto-reverses if credit truly failed (~T+2h) or late-confirm succeeds (up to 24h).
+- **AutoPay mandate is a SEPARATE state machine from debit execution.** A failed debit does NOT kill the mandate. Netflix retries per its policy while mandate stays ACTIVE.
+
+**Refund lifecycle:**
+- Refund = new state machine object. Payment intent state remains SUCCEEDED forever.
+- Partial refunds allowed. Invariant: `SUM(non-failed refunds) ≤ payment_intent.amount`. Concurrency-safe via SELECT FOR UPDATE.
+- MDR usually not refunded to merchant — merchant eats fee on refund.
+- Instant refund via IMPS available at extra cost.
+
+**Chargeback lifecycle — very different from refund:**
+- Refund = merchant-initiated, cooperative. Chargeback = customer-initiated via issuer, adversarial.
+- 8-state adversarial state machine: DISPUTE_OPENED → UNDER_REVIEW → REPRESENTED → WON/LOST → ARBITRATED optional.
+- Customer has ~120 days to dispute. Merchant has 7-14 days to represent with evidence.
+- Chargeback rate > 1% is red-flag; >1.8% is termination-worthy. Consequences: rolling reserve, MDR bumps, network fines.
+- Ledger effect distinct from refund: freezes funds, then either releases (WON) or debits (LOST) + fee.
+
+**Idempotency (game-changing correction):**
+- **Same key + same body = REPLAY cached response (do NOT reject).** I inverted this on Q-D3-17 — critical fix.
+- Same key + different body = 409 Conflict (misuse).
+- Concurrency race handled via unique-constraint INSERT with state='in_progress'.
+- Webhook dedup on **event_id** (not body hash) — PSPs may include retry counters, timestamps in body.
+- Idempotency key ≠ resource id. Key is one-shot, request-scoped. Resource id is stable.
+
+**Retry semantics — the biggest lesson locked:**
+- **Retry writes. Poll reads.** Confuse these = double-charge customers.
+- Exp backoff + jitter (AWS formula) prevents thundering herds.
+- Retry budget = max attempts + max wall-clock time. Budget exhausted → DLQ, page on-call.
+- Circuit breakers OPEN/CLOSED/HALF_OPEN cut retry storms at scale.
+- Non-terminal states (PROCESSING, DEEMED_APPROVE) require POLL, not retry.
+- Response class decision: 4xx don't retry; 5xx retry with backoff; terminal FAILED (hard) don't retry, (soft) smart route; non-terminal state poll.
+
+**Reconciliation:**
+- Three loops: real-time (5-10s poll), hourly sweep, EOD settlement-file compare.
+- Recon state machine per row: MATCHED / AMOUNT_MISMATCH / STATE_MISMATCH / MISSING_LOCAL / MISSING_REMOTE.
+- Missed-webhook is common enough to auto-remediate (trust PSP truth, retroactively emit downstream events).
+- Silent reconciliation failure is one of the worst anti-patterns — money leaks over months.
+- **Aggregate reads (dashboards, settlement summaries) come from local DB.** Never call PSP for weekly totals — got this one wrong on Q-D3-23, need to lock.
+
+**15 anti-patterns catalogued** — from `is_paid: boolean` to trusting client-side amounts. Each has caused a real production incident somewhere.
+
+**Recurring mistakes (things to lock before Phase 4):**
+- **Persist locally vs derive from PSP** — got Q-D3-23 wrong despite §1.4. Re-read.
+- **Retry vs poll for non-terminal states** — got Q-D3-21 right but instinct still leans retry.
+- **Refund vs chargeback** — got Q-D3-14 muddled despite Section 6.
+- **Idempotency contract** — got Q-D3-17 fundamentally wrong (inverted purpose of the key). Locked with re-teach.
+- **Cryptogram vs token** — carried over from Day 2. Watch.
+- **Mandate state vs debit state** — got Q-D3-12 muddled despite §4.6.
+
+**Key mental models locked:**
+
+- **REQUIRES_ACTION = customer's turn. PROCESSING = system's turn. REQUIRES_CAPTURE = merchant's turn.**
+- **Money never un-moved — only compensated with new rows.**
+- **Retry writes, poll reads. When you don't know the outcome, poll.**
+- **Same idempotency key + same body = replay. Same key + different body = 409. Different key = new operation.**
+- **Refund is cooperative + merchant-initiated. Chargeback is adversarial + customer-via-issuer.**
+- **Local DB is source of truth for MY system. PSP is source of truth for the wire. Reconcile at EOD.**
+
+**Quiz results:**
+- 24 questions across 8 topic sections.
+- Roughly 40-50% correct on first attempt.
+- Multiple critical corrections made (idempotency-key purpose inversion, PSP-on-every-read, mandate-state vs debit-state).
+- The recurring confusions (persist-vs-derive, refund-vs-chargeback, retry-vs-poll) are the ones to burn into instinct before writing Phase 4 code.
+
+**Artifacts produced:**
+
+- `docs/domain/txn-lifecycle.md` — 11 sections, ~1200 lines. State-machine diagrams for payment intent (8-state), card sub-states, UPI sub-states, refund, chargeback, AutoPay mandate, reconciliation. Full idempotency contract + retry decision tree + 15 anti-patterns.
+
+**Next session:** Day 4 — **Money representation + double-entry ledger 101**. Deliverables: `money-math.md` + `ledger-101.md`. Before Day 4, fill Section 11 of `txn-lifecycle.md`.

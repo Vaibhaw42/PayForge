@@ -1046,16 +1046,174 @@ The SDK/client library MUST distinguish these three response classes:
 
 ## 9 · Reconciliation states
 
-_(pending)_
+### 9.1 · Why reconciliation exists
+
+Locally-persisted state and PSP truth can **drift**:
+
+- Webhook lost → we think PROCESSING, PSP says SUCCEEDED
+- Bug in a state handler → wrong terminal state stored
+- U69 resolved late → auto-reversal event missed
+- Network partition between PSP and us → events never arrived
+- Clock skew → wrong ordering
+
+Every serious payment system runs a reconciliation loop that compares our DB against PSP's settlement report and flags drift. **Reconciliation is the auto-repair mechanism for the whole payment system.**
+
+### 9.2 · Reconciliation cadence — three loops
+
+| Loop | Runs | Compares |
+|------|------|----------|
+| **Real-time poll** | Every 5–10 s | Local PENDING / DEEMED_APPROVE → PSP status API |
+| **Hourly sweep** | Every 1 h | Local state → PSP list of recent txns |
+| **End-of-day reconciliation** | 1× daily post-EOD | Local settlement summary → PSP's settlement file |
+
+Real-time catches individual stragglers. Hourly catches missed webhooks in a small window. EOD catches everything.
+
+### 9.3 · Settlement file contract
+
+At EOD (or per settlement batch), PSP publishes a settlement file:
+
+```csv
+txn_id,merchant_ref,amount_minor,currency,method,psp_status,captured_at,settled_at,mdr_minor,tax_minor,net_credit_minor
+pi_abc123,ORDER-8842,100000,INR,card,SUCCESS,2026-07-21T14:32:07Z,2026-07-22T09:15:00Z,2200,396,97404
+pi_def456,ORDER-8843,50000,INR,upi,SUCCESS,2026-07-21T14:35:12Z,2026-07-21T14:35:14Z,0,0,50000
+```
+
+Fields: `txn_id`, `merchant_ref` (our `tr`), `amount_minor`, `currency`, `method`, `psp_status`, `captured_at`, `settled_at`, `mdr_minor`, `tax_minor`, `net_credit_minor`.
+
+PayForge downloads → parses → runs the reconciliation state machine per row.
+
+### 9.4 · Reconciliation state machine (per txn row)
+
+```mermaid
+stateDiagram-v2
+  [*] --> COMPARING: file row loaded
+  COMPARING --> MATCHED: local + PSP agree on state, amount, method
+  COMPARING --> AMOUNT_MISMATCH: amounts differ
+  COMPARING --> STATE_MISMATCH: states differ
+  COMPARING --> MISSING_LOCAL: PSP has it, we don't
+  COMPARING --> MISSING_REMOTE: we have it, PSP doesn't in this file
+  MATCHED --> [*]
+  AMOUNT_MISMATCH --> INVESTIGATE_QUEUE
+  STATE_MISMATCH --> AUTO_REMEDIATED: known pattern (missed webhook)
+  STATE_MISMATCH --> INVESTIGATE_QUEUE: unknown pattern
+  MISSING_LOCAL --> BACKFILLED: import into local DB
+  MISSING_REMOTE --> HELD: may settle next day
+  HELD --> INVESTIGATE_QUEUE: still missing after 3 days
+  AUTO_REMEDIATED --> [*]
+  BACKFILLED --> [*]
+  INVESTIGATE_QUEUE --> RESOLVED: ops team fixed
+  RESOLVED --> [*]
+```
+
+Most rows land in MATCHED. Drift categories:
+
+- **AMOUNT_MISMATCH** — our capture ₹1000, PSP says ₹1005. Investigate.
+- **STATE_MISMATCH** — we say PROCESSING (stuck), PSP says SUCCEEDED. Missed webhook. **Auto-remediate:** trust PSP, update local state, emit downstream events retroactively, mark auto-remediated.
+- **MISSING_LOCAL** — PSP shipped credit to a merchant we never recorded. Investigate.
+- **MISSING_REMOTE** — we captured, PSP doesn't have it today. Usually "will settle tomorrow" — hold, re-check next day.
+
+### 9.5 · Auto-remediation for STATE_MISMATCH (missed webhook)
+
+Common enough that PayForge automates it:
+
+1. Trust PSP as source of truth for the payment's outcome.
+2. Update local `payment_intents.state` to match.
+3. Emit downstream events retroactively:
+   - Internal event on Kafka
+   - Merchant webhook (with `reconciled: true` flag)
+   - Ledger postings (payment + MDR)
+4. Log in `reconciliation_incidents` table with reason `missed_webhook`.
+5. Mark recon row `AUTO_REMEDIATED`.
+6. Emit metric `reconciliation.drift.state_mismatch{cause=missed_webhook}` for observability.
+
+### 9.6 · Human review queue
+
+Every row that lands in `INVESTIGATE_QUEUE` shows up in an ops dashboard. Ops team:
+
+1. Investigates (logs, PSP dashboard, sometimes calls support).
+2. Manually posts a correction ledger entry.
+3. Marks the recon row `RESOLVED` with a note.
+
+**Design rule:** reconciliation drift must be **visible and actionable**, never silent. Silent failure = money leaks over months undetected.
+
+### 9.7 · Compliance retention
+
+- Persist EOD reconciliation summary permanently.
+- Show per-day totals: total txns, total captured, total settled, total drift.
+- Merchant statement (monthly).
+- Retain 5+ years (RBI PA guidelines).
+
+
 
 ---
 
 ## 10 · Anti-patterns (what NOT to do)
 
-_(pending)_
+Fifteen sins of payment engine design. Every one has caused a real production incident somewhere.
+
+### 10.1 · `is_paid: boolean`
+A boolean can't represent 10+ states, temporal transitions, or post-success events. See §1.1.
+
+### 10.2 · Overloading resource id with idempotency key
+Idempotency keys are client-generated, one-shot, request-scoped. Resource ids are server-generated, stable, resource-scoped. Never merge.
+
+### 10.3 · Storing raw PAN in your own DB
+Instant PCI DSS Level 1 nightmare. Use tokens or PSP-hosted UI (see `payment-methods.md` §1.6).
+
+### 10.4 · Trusting the immediate response as truth
+PSP returns "success" → merchant fulfills → hours later U69 auto-reverses. Free product to customer. Fix: only trust after polling + reconciliation confirm.
+
+### 10.5 · Retrying on non-terminal states
+Retrying PROCESSING or DEEMED_APPROVE risks double-execution. **Rule: poll, don't retry.**
+
+### 10.6 · No idempotency on money-moving endpoints
+Merchant network flakes mid-request → retry double-charges. Every state-changing endpoint MUST accept an idempotency key.
+
+### 10.7 · Reusing the same idempotency key across operations
+Client generates `key = 'daily_batch_2026-07-21'` for every txn in a batch. First succeeds; rest return the first's response. Only first executes. Fix: one key per logical operation.
+
+### 10.8 · Using `updated_at` to detect state changes
+Timestamps race under clock skew and concurrent updates. Fix: explicit state field with optimistic-locking `version` column, OR event sourcing (Phase 5).
+
+### 10.9 · Emitting webhooks from the request path
+Synchronous webhook delivery inside the HTTP handler → merchant's slow endpoint blocks your handler → cascading latency. Fix: queue webhook events (Kafka), separate worker delivers async with retries + DLQ.
+
+### 10.10 · Floats for money
+`0.1 + 0.2 !== 0.3` in JS. Drift accumulates over millions of txns. Fix: integer minor units. Use `bigint` above 2^53.
+
+### 10.11 · Silent reconciliation failures
+Sweeper finds mismatch → logs → moves on. Ops discovers ₹5 L drift 3 months later. Fix: every mismatch alerts OR queues to visible dashboard.
+
+### 10.12 · Not verifying webhook signatures
+Anyone with the URL can spoof events → merchant ships free product. Fix: HMAC-sign every webhook with a shared secret; merchant validates before acting.
+
+### 10.13 · Trusting client-side amount
+Merchant frontend sends `{amount: 100}` for a ₹1000 order (bug or malice). Server accepts → customer pays ₹1 for ₹1000 item. Fix: server always fetches amount from server-side ground truth, ignores client-supplied.
+
+### 10.14 · Storing payments only after PSP confirms
+Merchant creates local payment_intent only AFTER PSP returns success → crash between the two → charge exists at PSP, invisible locally. Fix: write local state BEFORE calling PSP, in `REQUIRES_PAYMENT_METHOD`.
+
+### 10.15 · Cancelling from any state
+Merchant panic-cancels a PROCESSING intent → local state moves to CANCELED but PSP still captures. Mismatch. Fix: enforce cancel legality strictly (§2.3).
+
+
 
 ---
 
 ## 11 · What I still don't understand
 
-_(to fill)_
+Vaibhaw to fill honestly after re-reading. Candidate gap areas from Day 3 Q&A weaknesses:
+
+- **DEEMED_APPROVE resolution timing** — I want a real trace of a U69 that succeeds late (say, T+20h) versus one that auto-reverses at T+2h. What does the poller see, and what's the retry cadence?
+- **Idempotency key TTL edge cases** — what happens when a merchant retries a call at hour 25 with the same key? Server treats as new operation and double-charges?
+- **Reconciliation auto-remediation limits** — for what kinds of drift is auto-remediation SAFE? Are amount mismatches EVER auto-remediated, or always human-in-the-loop?
+- **Circuit breaker + smart routing interaction** — if PSP A's circuit is OPEN, and PSP B is our fallback via smart routing, does the retry-with-different-scheme land in a totally separate state trajectory? How does the payment intent state stay coherent?
+- **Chargeback vs refund state persistence** — in the ledger, do I model a chargeback as a NEW journal entry compensating the payment, or does the payment intent itself get a `disputes` sub-collection? What's the norm at Stripe/Razorpay?
+
+Recurring self-confusion to close before Phase 4:
+- Local DB as source of truth vs PSP API — I said "fetch PSP" for Q-D3-23 despite §1.4 teaching the opposite. Lock this.
+- Retry vs poll for non-terminal states — got Q-D3-21 right but the underlying instinct still leans "retry". Practice.
+- Refund vs chargeback distinction — despite Section 6, still muddled in Q-D3-14. Re-draw the table until instinct locks.
+
+**Instruction to future me:** re-read §1.4 (persist-don't-derive), §6.1 (refund-vs-chargeback), §8.2 (retry-vs-poll) before starting Phase 4 code.
+

@@ -4,7 +4,7 @@
 
 ## Current phase
 
-🟡 **Phase -1 · FinTech Fundamentals** — Day 2 complete → Day 3 next
+🟡 **Phase -1 · FinTech Fundamentals** — Day 3 complete → Day 4 next
 
 Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain/).
 
@@ -14,8 +14,8 @@ Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain
 |-----|-------|-------------|--------|
 | 1 | Money movement + actors | `docs/domain/actors.md` | ✅ done |
 | 2 | Payment methods (cards + UPI deep-dive) | `docs/domain/payment-methods.md` | ✅ done |
-| 3 | Transaction lifecycle + states | `docs/domain/txn-lifecycle.md` | ⏳ next |
-| 4 | Money representation + double-entry basics | `docs/domain/money-math.md` + `ledger-101.md` |
+| 3 | Transaction lifecycle + states | `docs/domain/txn-lifecycle.md` | ✅ done |
+| 4 | Money representation + double-entry basics | `docs/domain/money-math.md` + `ledger-101.md` | ⏳ next |
 | 5 | Idempotency + reliability | `docs/domain/idempotency.md` |
 | 6 | Compliance map (PCI, RBI PA/PG, KYC/AML) | `docs/domain/compliance-map.md` |
 | 7 | Stripe + Razorpay reference architectures | `docs/domain/reference-architecture-notes.md` |
@@ -73,5 +73,5 @@ None.
 
 ## Next session
 
-- Day 3: **Transaction lifecycle + states** — auth/capture/clearing/settlement state machines, retry semantics, idempotency contracts. Deliverable: `docs/domain/txn-lifecycle.md`.
-- Before starting Day 3, Vaibhaw to fill Section 8 ("What I still don't understand") in `payment-methods.md`.
+- Day 4: **Money representation + double-entry ledger 101.** How to represent money without float drift, minor units, currency, rounding, FX. Then double-entry basics — accounts, debits, credits, invariants, journal entries. Deliverables: `docs/domain/money-math.md` + `docs/domain/ledger-101.md`.
+- Before starting Day 4, Vaibhaw to fill Section 11 of `txn-lifecycle.md` with honest gaps.
