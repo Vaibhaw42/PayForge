@@ -1202,18 +1202,52 @@ Merchant panic-cancels a PROCESSING intent → local state moves to CANCELED but
 
 ## 11 · What I still don't understand
 
-Vaibhaw to fill honestly after re-reading. Candidate gap areas from Day 3 Q&A weaknesses:
+### 11.1 · Top gap — the multiple state machines still mingle
 
-- **DEEMED_APPROVE resolution timing** — I want a real trace of a U69 that succeeds late (say, T+20h) versus one that auto-reverses at T+2h. What does the poller see, and what's the retry cadence?
-- **Idempotency key TTL edge cases** — what happens when a merchant retries a call at hour 25 with the same key? Server treats as new operation and double-charges?
-- **Reconciliation auto-remediation limits** — for what kinds of drift is auto-remediation SAFE? Are amount mismatches EVER auto-remediated, or always human-in-the-loop?
-- **Circuit breaker + smart routing interaction** — if PSP A's circuit is OPEN, and PSP B is our fallback via smart routing, does the retry-with-different-scheme land in a totally separate state trajectory? How does the payment intent state stay coherent?
-- **Chargeback vs refund state persistence** — in the ledger, do I model a chargeback as a NEW journal entry compensating the payment, or does the payment intent itself get a `disputes` sub-collection? What's the norm at Stripe/Razorpay?
+Honest: PayForge has **six state machines running in parallel** on any given txn. Bifurcation between them is my #1 confusion.
 
-Recurring self-confusion to close before Phase 4:
-- Local DB as source of truth vs PSP API — I said "fetch PSP" for Q-D3-23 despite §1.4 teaching the opposite. Lock this.
-- Retry vs poll for non-terminal states — got Q-D3-21 right but the underlying instinct still leans "retry". Practice.
-- Refund vs chargeback distinction — despite Section 6, still muddled in Q-D3-14. Re-draw the table until instinct locks.
+**One-page reference for all six (bookmark this):**
 
-**Instruction to future me:** re-read §1.4 (persist-don't-derive), §6.1 (refund-vs-chargeback), §8.2 (retry-vs-poll) before starting Phase 4 code.
+| # | State machine | Object it lives on | States | Terminal? |
+|---|--------------|-------------------|--------|-----------|
+| 1 | **Payment Intent** (external, 8-state) | `payment_intents` row | REQUIRES_PAYMENT_METHOD, REQUIRES_CONFIRMATION, REQUIRES_ACTION, PROCESSING, REQUIRES_CAPTURE, SUCCEEDED, FAILED, CANCELED | last 3 terminal |
+| 2 | **Card sub-states** (internal, inside PROCESSING) | Internal to `payment_intents` (not exposed) | AUTH_PENDING, AUTH_APPROVED, CAPTURE_PENDING, CAPTURED, SETTLEMENT_PENDING, SETTLED, AUTH_DECLINED, CAPTURE_FAILED, VOIDED, EXPIRED | some terminal |
+| 3 | **UPI sub-states** (internal, inside PROCESSING) | Internal to `payment_intents` (not exposed) | INITIATED, AT_NPCI, DEBIT_PENDING, DEBIT_SUCCESS, DEBIT_FAILED, CREDIT_PENDING, CREDIT_SUCCESS, CREDIT_FAILED, DEEMED_APPROVE, AUTO_REVERSED | some terminal |
+| 4 | **Refund** | `refunds` row | PENDING, PROCESSING, SUCCEEDED, FAILED, DEEMED_APPROVE | 3 terminal |
+| 5 | **Chargeback / Dispute** | `disputes` row | DISPUTE_OPENED, UNDER_REVIEW, REPRESENTED, ACCEPTED, WON, LOST, ARBITRATED, WON_FINAL, LOST_FINAL | 5 terminal |
+| 6 | **Mandate (UPI AutoPay)** | `mandates` row | AWAITING_APPROVAL, ACTIVE, PAUSED, REVOKED, EXPIRED, REJECTED | 3 terminal |
+| 7 | **Reconciliation** (per row per EOD file) | `reconciliation_rows` row | COMPARING, MATCHED, AMOUNT_MISMATCH, STATE_MISMATCH, MISSING_LOCAL, MISSING_REMOTE, HELD, AUTO_REMEDIATED, BACKFILLED, INVESTIGATE_QUEUE, RESOLVED | 4 terminal |
+
+### 11.2 · Rules for keeping the state machines separate
+
+1. **Each machine lives on ITS OWN table row.** Payment intent state on `payment_intents`, refund state on `refunds`, mandate state on `mandates`. Never squeeze two machines onto one row.
+
+2. **Transitions on machine A never trigger writes on machine B directly.** They emit an event, and a handler for machine B decides whether to react. Loose coupling.
+
+3. **Terminal states on one machine do not force terminal states on any other.** Examples I still get wrong:
+   - Payment intent SUCCEEDED does NOT put a mandate into a terminal state.
+   - A failed debit (payment intent FAILED) does NOT change mandate state.
+   - Refund SUCCEEDED does NOT change payment intent state — it stays SUCCEEDED.
+   - Chargeback LOST does NOT change payment intent state either — payment stays SUCCEEDED, chargeback row moves to LOST.
+
+4. **Internal sub-states (card, UPI) never exposed to merchant.** External API only returns external 8-state.
+
+5. **Reconciliation is a shadow machine** — it observes the others and repairs drift; it does not participate in the primary flow.
+
+### 11.3 · Other remaining gaps
+
+- **DEEMED_APPROVE resolution timing** — need a real trace of U69 succeeding at T+20h vs auto-reversing at T+2h. What does the poller see?
+- **Idempotency key TTL edge cases** — retry at hour 25 with same key = new operation = double charge?
+- **Reconciliation auto-remediation limits** — is amount mismatch ever auto-remediated?
+- **Circuit breaker + smart routing interaction** — if PSP A OPEN, PSP B is fallback via smart routing, how does the payment intent state stay coherent?
+- **Chargeback ledger modelling** — separate journal entries vs sub-collection on payment intent?
+
+### 11.4 · Recurring self-confusion to close before Phase 4
+
+- **Local DB as source of truth vs PSP API** — got Q-D3-23 wrong despite §1.4. Lock.
+- **Retry vs poll** — got Q-D3-21 right but instinct still leans "retry". Practice.
+- **Refund vs chargeback** — got Q-D3-14 muddled despite Section 6. Re-draw table until instinct locks.
+- **Multiple state machines mingling** — recurring since Day 2 (mandate-vs-debit); locked with §11.1 reference table.
+
+**Instruction to future me:** re-read §1.4 (persist-don't-derive), §6.1 (refund-vs-chargeback), §8.2 (retry-vs-poll), §11.1 (state-machine reference) before starting Phase 4 code.
 
