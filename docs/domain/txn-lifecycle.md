@@ -756,13 +756,291 @@ Three different granularities.
 
 ## 7 · Idempotency contracts
 
-_(pending)_
+### 7.1 · Why idempotency exists
+
+Real-world payment flow can fail mid-way:
+
+```
+T=0.0s  Merchant sends POST /payment_intents
+T=0.5s  PayForge accepts, starts processing
+T=2.0s  Server successfully charges the card
+T=2.5s  Server tries to send 200 OK response
+T=2.5s  ...network drops...
+T=30s   Merchant's HTTP client times out
+T=30s   Merchant retries the request
+
+DANGER: server did the payment. Merchant didn't see the response.
+Naïve retry double-charges.
+```
+
+**Idempotency = "safely repeatable."** Same request sent N times has the same effect as sending it once. No double charges. This is a hard requirement for every state-changing payment endpoint.
+
+### 7.2 · The idempotency-key contract
+
+Client generates a **unique key per logical operation** and sends it as an HTTP header:
+
+```http
+POST /v1/payment_intents
+Idempotency-Key: pi_req_9c1b7e2f-8a44-4b6f-b1c2-d5f3a89e2c11
+Content-Type: application/json
+
+{ "amount": 100000, "currency": "INR", "method": "card" }
+```
+
+Server's contract:
+
+1. **First request with a new key** → process normally; store `(key → {request_hash, response, status})`; return response.
+2. **Same key + same body** → **replay cached response instantly.** Do NOT re-execute. Purpose of the key is exactly this.
+3. **Same key + different body** → return `409 Conflict` (misuse; one key = one operation).
+4. **Different key** → new independent operation.
+
+Keys live for a **TTL** (typically 24 h). After TTL, key is forgotten.
+
+**Storage schema (Phase 4):**
+
+```sql
+create table idempotency_keys (
+  key text primary key,
+  merchant_id uuid not null,
+  request_body_hash text not null,       -- sha256 of body
+  response_status int,
+  response_body jsonb,
+  state text,                             -- 'in_progress' | 'completed' | 'errored'
+  created_at timestamp,
+  expires_at timestamp                    -- created_at + 24h
+);
+```
+
+### 7.3 · Handling concurrent requests
+
+Merchant retries **before first request completes**. Two identical requests arrive simultaneously.
+
+**Wrong:** both check "does key exist?" → both see "no" → both proceed → double-charge.
+
+**Correct:** on first request, INSERT with `state='in_progress'` atomically. Second request's INSERT hits unique-constraint violation → detects concurrent execution → returns `409` or **polls** for the first to complete.
+
+```ts
+async function handlePayment(req) {
+  const key = req.headers['idempotency-key']
+  const bodyHash = sha256(req.body)
+
+  const existing = await db.query(`SELECT * FROM idempotency_keys WHERE key = ?`, [key])
+
+  if (existing) {
+    if (existing.request_body_hash !== bodyHash) return 409  // body mismatch
+    if (existing.state === 'completed') return existing.response  // replay
+    if (existing.state === 'in_progress') return 409          // or poll and wait
+  }
+
+  await db.insert('idempotency_keys', {
+    key, merchant_id, request_body_hash: bodyHash,
+    state: 'in_progress', created_at: now(), expires_at: now() + 24h
+  })
+
+  const result = await actuallyProcessPayment(req.body)
+
+  await db.update('idempotency_keys',
+    { response_body: result, response_status: 200, state: 'completed' },
+    { key })
+
+  return result
+}
+```
+
+Unique constraint on `key` is your race gate.
+
+### 7.4 · Where idempotency matters
+
+**Must be idempotent** (state-changing endpoints):
+
+- `POST /payment_intents` (create)
+- `POST /payment_intents/:id/confirm`
+- `POST /payment_intents/:id/capture`
+- `POST /payment_intents/:id/cancel`
+- `POST /refunds`
+- Every webhook consumer (Phase 7)
+
+**Naturally idempotent, no key needed** (side-effect-free):
+
+- `GET /payment_intents/:id`
+- `GET /refunds/:id`
+
+### 7.5 · Idempotency key ≠ resource id
+
+- **Idempotency key** — client-generated, one-time-use, request-scoped.
+- **Resource id** — server-generated (`pi_abc123`), stable identifier of the object.
+
+Never expose keys as resource identifiers. Never let clients look up an object by idempotency key. Key is a de-duplication token, not a data pointer.
+
+### 7.6 · Webhook consumer idempotency
+
+Webhooks arrive **at-least-once** — PSP may deliver the same event 2–N times. Dedupe by **`event_id`** (PSP-generated, guaranteed unique per event):
+
+```ts
+async function handleWebhook(req) {
+  const eventId = req.body.id
+  const seen = await db.query('SELECT 1 FROM webhook_events WHERE id = ?', [eventId])
+  if (seen) return 200  // dedupe — return 200 or PSP will retry
+
+  await db.transaction(async (tx) => {
+    await tx.insert('webhook_events', { id: eventId, received_at: now(), payload: req.body })
+    await processEvent(req.body)
+  })
+  return 200
+}
+```
+
+Never dedupe on **body hash** — PSPs include retry counters and delivered_at timestamps that change between deliveries. `event_id` is the canonical, contract-guaranteed dedup key.
+
+**Always return 200 on duplicates.** Non-2xx makes PSP treat it as delivery failure and retry — perpetuates the storm.
+
+### 7.7 · Common idempotency bugs
+
+- **Missing TTL cleanup** — key table grows unbounded. Fix: nightly delete of expired keys.
+- **Same key reused for different logical operations** — merchant reuses `req_0001` for create then confirm. Server misroutes. Fix: return 409 on body mismatch.
+- **Key stored only after success** — server errored mid-request, no record persisted → retry re-executes. Fix: persist key with `state='in_progress'` on request receipt, before processing.
+- **Idempotency only on happy path** — same problem, different flavour. Fix: persist regardless of outcome; distinguish 'completed' vs 'errored' state.
+
+
 
 ---
 
 ## 8 · Retry semantics + timeouts
 
-_(pending)_
+### 8.1 · Three retry layers
+
+Payment flows have retries at three distinct layers, each with its own policy. They compose.
+
+1. **Client → Server** (merchant → PayForge)
+2. **Server → PSP** (PayForge → Razorpay/Stripe)
+3. **PSP → Network → Issuer** (mostly invisible to us)
+
+### 8.2 · Retry vs Poll — the most important distinction
+
+**Retry writes. Poll reads.** Confuse these and you double-charge customers.
+
+- **Retry** = re-execute a state-changing operation. Safe only if idempotent AND the operation state is still pre-flight or explicitly retryable.
+- **Poll** = read-only status check. Always safe. Answers "what did the previous request actually end up doing?"
+
+**When you don't know the outcome, poll — never retry blindly.**
+
+### 8.3 · What is safe to retry, what is not
+
+| Situation | Safe to retry? | Correct action |
+|-----------|----------------|----------------|
+| Network timeout before PSP received | Yes | Retry with same idempotency key |
+| Network timeout after PSP received | Only with idempotency key | Retry (server dedupes) OR poll |
+| Response = 5xx | Yes (if idempotent) | Retry with backoff |
+| Response = 4xx | No | Fix input |
+| Response = 200 SUCCEEDED | No | Done |
+| Explicit FAILED (hard) | No | Show error |
+| Explicit FAILED (soft — issuer down) | Yes | Retry / smart route via different acquirer or scheme |
+| Explicit PROCESSING | No | **Poll** status API |
+| Explicit REQUIRES_ACTION | No | Wait for customer |
+| Explicit DEEMED_APPROVE | No | **Poll** — retry risks double debit |
+
+### 8.4 · Exponential backoff + jitter
+
+Naïve retry (immediately / 1 s / 2 s / 4 s …) creates **thundering herds** — if 1000 clients fail at the same instant, they all retry in lock-step and crush PSP.
+
+**Add jitter (randomness):**
+
+```
+delay = min(cap, base * 2^attempt) * random(0.5, 1.5)
+```
+
+Example, base = 1 s, cap = 30 s:
+
+| Attempt | Delay range |
+|--------:|-------------|
+| 0 | 0.5–1.5 s |
+| 1 | 1–3 s |
+| 2 | 2–6 s |
+| 3 | 4–12 s |
+| 4+ | 15–30 s (capped) |
+
+Real-world default across most fintech SDKs: **exponential backoff with equal jitter (AWS jitter).**
+
+### 8.5 · Retry budget
+
+Two limits:
+
+- **Max attempts** — 3–5 for user-facing flows; 10–20 for background webhook delivery.
+- **Max wall-clock time (deadline)** — 30 s for interactive; 24–72 h for webhook delivery.
+
+**When budget exhausted:** move to a **dead-letter queue (DLQ)** and page on-call. Never silently give up.
+
+### 8.6 · Timeout vs retry — separate concerns
+
+Timeout = give up waiting, treat as unknown. Retry = re-issue.
+
+Typical values for interactive payments:
+
+| Layer | Per-attempt timeout | Retries | Total budget |
+|-------|--------------------|---------|--------------|
+| Merchant → PayForge | 30 s | 2 | 90 s |
+| PayForge → PSP (auth) | 20 s | 1 | 40 s |
+| PayForge → PSP (capture) | 60 s | 3 | ~3 min |
+| Webhook delivery | 10 s | 15 with exp backoff | 24 h |
+
+### 8.7 · Circuit breakers — stop retrying when dependency is down
+
+If PSP is systemically down, retries hurt more than help — they pile load while PSP tries to recover.
+
+```
+CLOSED (all requests pass)
+   ↓ (N failures in T seconds)
+OPEN (all requests fail fast, no attempt)
+   ↓ (after cooldown)
+HALF_OPEN (allow one trial request)
+   ↓ trial ok → CLOSED
+   ↓ trial fails → OPEN
+```
+
+Libraries: `opossum` (Node), Resilience4j (Java), Polly (.NET).
+
+**Design rule for PayForge:** every external call wrapped in a circuit breaker. Breaker OPEN → fail fast with `PSP_UNAVAILABLE` → merchant handles gracefully.
+
+### 8.8 · Retry storms — the anti-pattern
+
+Bad retry logic amplifies small failures into outages.
+
+- PSP at 5% error, 3 retries → effective load 1.15× normal. Bearable.
+- PSP degrades to 50% error, 3 retries → effective load 2.5×. Overloads PSP → error rate rises → more retries → **death spiral**.
+
+Prevention:
+
+- Circuit breakers.
+- Retry budget cap per time window.
+- **Adaptive retry** — reduce retries when observed error rate is high.
+
+### 8.9 · The unified retry decision tree
+
+```
+Response received?
+├── No (timeout) → retry with same idempotency key OR poll for state
+├── 200 OK + terminal (SUCCEEDED/FAILED/CANCELED) → done
+├── 200 OK + non-terminal (PROCESSING/REQUIRES_ACTION/DEEMED_APPROVE)
+│    → POLL, don't retry
+├── 4xx (client error) → don't retry — fix input
+├── 5xx (server error) → retry with exp backoff + jitter (if idempotent)
+└── Explicit FAILED
+     ├── hard → don't retry
+     └── soft → retry / smart route
+```
+
+### 8.10 · PayForge client-library contract
+
+The SDK/client library MUST distinguish these three response classes:
+
+| Response class | Action |
+|----------------|--------|
+| Network error / timeout / 5xx | Retry with same idempotency key |
+| 2xx + terminal state (SUCCEEDED / FAILED / CANCELED) | Return to caller |
+| 2xx + non-terminal state (PROCESSING / REQUIRES_ACTION / DEEMED_APPROVE) | **Poll**, do not retry |
+| 4xx | Return error to caller, do not retry |
+
+
 
 ---
 
