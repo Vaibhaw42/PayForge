@@ -341,3 +341,66 @@ Deeper dive than txn-lifecycle §7-8. Direct input to Phase 4/5/7/12.
 - `docs/domain/idempotency.md` — 11 sections, ~600 lines. Foundations (8 fallacies, two-generals), delivery guarantees, idempotency deep-dive, Outbox pattern, Inbox pattern, retry policies, DLQ design, saga pattern, choreography vs orchestration, 15 common bugs.
 
 **Next session:** Day 6 — **Compliance map** (`compliance-map.md`). RBI PA/PG guidelines, PCI DSS, KYC/AML, data localization, PMLA, GST invoicing.
+
+---
+
+## 2026-07-24 · Phase -1 · Days 6-8 · Compliance + Reference Architectures + Recap
+
+Vaibhaw's directive: complete Phase -1 remaining docs autonomously. ADR-0001 captured the operating model. Days 6-8 shipped in one batch.
+
+**Day 6 · `compliance-map.md`:**
+
+- Regulator + operator map (RBI, NPCI, FIU-IND, CERT-In, MeitY, GST Council, SEBI, IRDAI).
+- **RBI PA/PG Guidelines March 2020** — the master doc. ₹15 cr net worth to apply, ₹25 cr ongoing. Escrow at sponsor bank, no commingling, no interest earning, T+1 settlement to merchant, KYC responsibility. PA license takes 6–12 months.
+- **PCI DSS** — 4 levels by volume, 12 requirement families, SAD never stored (CVV/PIN/track), PayForge target = SAQ A (out of scope entirely) via PSP-hosted UI.
+- **KYC/AML** — merchant KYC is PA's job (PAN, GSTIN, address, incorporation, penny-drop verify). AML screens against OFAC/UN/MHA sanction lists.
+- **RBI 2018 data localization** — all payment data in India only. AWS ap-south-1/ap-south-2. Backups India-only.
+- **FIU-IND** — CTR (>₹10L cash), STR (suspicious), CBWTR (cross-border), NTR (NGO). STR filed within 7 days, retained 10 years.
+- **PMLA** — 5-year record retention. Deletion forbidden in retention window; immutable log required.
+- **GST 18% on fees** — CGST 9+SGST 9 intra-state; IGST 18 inter-state. Karnataka merchant + Maharashtra PA → IGST.
+- **IT Act 2000 + DPDP Act 2023** — DPDP has stricter cross-border rules, but RBI localization is stricter still; follow RBI.
+- **Recent RBI directions (2022-2026)** — Card-on-File tokenization Oct 2022, e-mandate refined 2023, PA-CB Oct 2023, NPCI 30% TPAP cap deferred to Dec 2026, DPDP phased 2024-2026.
+- **Feature-license map (§11)** — 15-row table of what PayForge can/can't do without licenses. Bottom line: simulate PA, never fake real regulatory approval.
+
+**Day 7 · `reference-architecture-notes.md`:**
+
+Distilled 20+ patterns from Stripe + Razorpay that PayForge will adopt:
+
+- **API design** — Stripe's 8-state PaymentIntent, prefixed ids (pi_, re_, dp_, evt_, mer_), cursor pagination, structured error object, metadata field, idempotency-key header, HMAC-SHA256 webhook signatures.
+- **State machines** — PayForge sticks with Stripe's PaymentIntent (retries create new intents) over Razorpay's Order + Payment split. Simpler mental model.
+- **Reliability** — outbox pattern (Stripe's "record then publish"), inbox pattern, smart routing across acquirers (Razorpay's specialty), circuit breakers on external hops, deadline propagation.
+- **Data/storage** — integer minor units, ULID-based prefixed ids, Postgres as source of truth, Kafka for events, Redis for cache. Shard by merchant_id only at 10M+ events/day scale.
+- **Security** — hosted UI for PCI scope reduction, publishable-vs-secret API keys, webhook signature verification, rate limiting, log-scrubbing pipeline.
+- **Observability** — structured JSON logs with correlation ids, RED metrics, OpenTelemetry traces, published SLOs.
+- **Testing** — sandbox mode with test cards/VPAs (`success@razorpay`, `failure@razorpay`), contract testing (Pact for microservices), property-based tests for money math (fast-check), chaos engineering.
+- **Frontend** — Razorpay/Stripe Dashboard as references. SSE/websockets for realtime updates.
+- **NOT borrowed** — multi-region active-active, cellular architecture, custom KV stores. Overkill for PayForge's scale.
+- **Reading list** — Stripe blog posts, Razorpay tech talks, Kleppmann's DDIA, Adyen/Uber/Airbnb payment blogs.
+
+**Day 8 · `PHASE_MINUS_1_RECAP.md`:**
+
+Phase-1 exit summary:
+- 8 deliverables shipped (actors, payment-methods, txn-lifecycle, money-math, ledger-101, idempotency, compliance-map, reference-architecture-notes) + 1 ADR (0001) + 1 recap doc.
+- 30 key mental models catalogued.
+- 15 numeric constants to memorize (UPI 0% MDR, GST 18%, RBI PA ₹15/₹25 cr, PMLA 5/10y retention, T+1 settle, 5-7d refund, etc.).
+- Recurring mistakes locked with in-file lookup tables per doc.
+- Green-light criteria all checked.
+- Git tag `phase-minus-1-complete` to be applied on commit.
+
+**Governing operating model:**
+
+Locked via **ADR-0001**: simulate PA architecture end-to-end (message flows, ledger, settlement, webhooks, fraud, observability) without touching real money. Every other engineering concern — architecture, security, testing, docs, observability, DR — production-grade.
+
+Every future phase inherits this constraint. Any feature needing a real license (PPI, NBFC, IRDAI, SEBI, FEMA) is out of scope.
+
+**Artifacts produced:**
+
+- `docs/decisions/ADR-0001-simulate-pa-no-real-money.md`
+- `docs/domain/compliance-map.md`
+- `docs/domain/reference-architecture-notes.md`
+- `docs/domain/PHASE_MINUS_1_RECAP.md`
+- Domain README + STATUS + LEARNING_LOG updated.
+
+**Phase -1 total output:** 8 domain docs (~4000 lines), 1 ADR, 1 recap. All committed to `main`, tag `phase-minus-1-complete`.
+
+**Next session:** **Phase 0 — Planning & Requirements.** Vision, personas, scope, non-goals, functional + non-functional reqs, success metrics, baseline ADRs 0002+. Deliverable: `docs/architecture/phase-0.md`.

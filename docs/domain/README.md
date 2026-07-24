@@ -12,8 +12,9 @@ All Phase -1 (FinTech Fundamentals) deliverables live here. Each file is a self-
 | 4 | `money-math.md` — minor units, currency, rounding, FX | ✅ done (2026-07-24) |
 | 5 | `ledger-101.md` — double-entry accounting basics | ✅ done (2026-07-24) |
 | 6 | `idempotency.md` — idempotency keys, at-least-once, exactly-once myth | ✅ done (2026-07-24) |
-| 7 | `compliance-map.md` — PCI DSS, RBI PA/PG, KYC/AML, data localization | ⏳ pending |
-| 8 | `reference-architecture-notes.md` — Stripe + Razorpay engineering patterns | ⏳ pending |
+| 7 | `compliance-map.md` — PCI DSS, RBI PA/PG, KYC/AML, data localization | ✅ done (2026-07-24) |
+| 8 | `reference-architecture-notes.md` — Stripe + Razorpay engineering patterns | ✅ done (2026-07-24) |
+| — | `PHASE_MINUS_1_RECAP.md` — Phase -1 exit summary + green-light checklist | ✅ done (2026-07-24) |
 
 Legend: ⏳ pending · 🟡 in progress · ✅ done · ♻️ revisiting
 

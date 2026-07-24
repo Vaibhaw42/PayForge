@@ -4,7 +4,9 @@
 
 ## Current phase
 
-🟡 **Phase -1 · FinTech Fundamentals** — Day 5 complete → Day 6 next
+✅ **Phase -1 · FinTech Fundamentals — COMPLETE (2026-07-24)** · Git tag `phase-minus-1-complete`
+
+🟡 **Phase 0 · Planning & Requirements** — starting next session
 
 Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain/).
 
@@ -17,9 +19,9 @@ Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain
 | 3 | Transaction lifecycle + states | `docs/domain/txn-lifecycle.md` | ✅ done |
 | 4 | Money representation + double-entry basics | `docs/domain/money-math.md` + `ledger-101.md` | ✅ done |
 | 5 | Idempotency + reliability | `docs/domain/idempotency.md` | ✅ done |
-| 6 | Compliance map (PCI, RBI PA/PG, KYC/AML) | `docs/domain/compliance-map.md` | ⏳ next |
-| 7 | Stripe + Razorpay reference architectures | `docs/domain/reference-architecture-notes.md` |
-| 8 | Recap + quiz | Green light to Phase 0 |
+| 6 | Compliance map (PCI, RBI PA/PG, KYC/AML) | `docs/domain/compliance-map.md` | ✅ done |
+| 7 | Stripe + Razorpay reference architectures | `docs/domain/reference-architecture-notes.md` | ✅ done |
+| 8 | Recap + quiz | `docs/domain/PHASE_MINUS_1_RECAP.md` | ✅ done — green light to Phase 0 |
 
 ## Environment state
 
@@ -73,5 +75,13 @@ None.
 
 ## Next session
 
-- Day 6: **Compliance map.** RBI PA/PG guidelines (2020), PCI DSS scope, KYC/AML, data localization (2018), FIU-IND STR/SAR, GST invoicing, PMLA record retention. Deliverable: `docs/domain/compliance-map.md`.
-- Before starting Day 6, Vaibhaw to fill Section 11 of `idempotency.md`.
+**Phase 0 — Planning & Requirements** kickoff.
+
+- Vision, personas, scope, non-goals.
+- Functional requirements (user stories per feature).
+- Non-functional requirements (latency, availability, consistency, security).
+- Success metrics.
+- Baseline ADRs 0002+ (stack, framework, monorepo, testing, observability choices).
+- Deliverable: `docs/architecture/phase-0.md` + additional ADRs.
+
+Governing decision: [ADR-0001](docs/decisions/ADR-0001-simulate-pa-no-real-money.md) — simulate PA, no real money, production-grade elsewhere.

@@ -37,7 +37,7 @@ What we chose and why.
 
 | # | Title | Status | Date |
 |--:|-------|--------|------|
-| _(none yet — first ADR will be captured in Phase 0)_ | | | |
+| 0001 | [Simulate PA, no real money, prod-grade elsewhere](ADR-0001-simulate-pa-no-real-money.md) | Accepted | 2026-07-24 |
 
 ## Rules
 
