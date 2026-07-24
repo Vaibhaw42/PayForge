@@ -4,7 +4,7 @@
 
 ## Current phase
 
-🟡 **Phase -1 · FinTech Fundamentals** — Day 3 complete → Day 4 next
+🟡 **Phase -1 · FinTech Fundamentals** — Day 4 complete → Day 5 next
 
 Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain/).
 
@@ -15,8 +15,8 @@ Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain
 | 1 | Money movement + actors | `docs/domain/actors.md` | ✅ done |
 | 2 | Payment methods (cards + UPI deep-dive) | `docs/domain/payment-methods.md` | ✅ done |
 | 3 | Transaction lifecycle + states | `docs/domain/txn-lifecycle.md` | ✅ done |
-| 4 | Money representation + double-entry basics | `docs/domain/money-math.md` + `ledger-101.md` | ⏳ next |
-| 5 | Idempotency + reliability | `docs/domain/idempotency.md` |
+| 4 | Money representation + double-entry basics | `docs/domain/money-math.md` + `ledger-101.md` | ✅ done |
+| 5 | Idempotency + reliability | `docs/domain/idempotency.md` | ⏳ next |
 | 6 | Compliance map (PCI, RBI PA/PG, KYC/AML) | `docs/domain/compliance-map.md` |
 | 7 | Stripe + Razorpay reference architectures | `docs/domain/reference-architecture-notes.md` |
 | 8 | Recap + quiz | Green light to Phase 0 |
@@ -73,5 +73,5 @@ None.
 
 ## Next session
 
-- Day 4: **Money representation + double-entry ledger 101.** How to represent money without float drift, minor units, currency, rounding, FX. Then double-entry basics — accounts, debits, credits, invariants, journal entries. Deliverables: `docs/domain/money-math.md` + `docs/domain/ledger-101.md`.
-- Before starting Day 4, Vaibhaw to fill Section 11 of `txn-lifecycle.md` with honest gaps.
+- Day 5: **Idempotency + reliability.** Deep-dive on idempotency contracts (partly touched in txn-lifecycle §7), at-least-once vs exactly-once semantics, retry safety, event delivery guarantees, replay, DLQ. Deliverable: `docs/domain/idempotency.md`.
+- Before starting Day 5, Vaibhaw to fill Section 11 of `money-math.md` and Section 11 of `ledger-101.md`.

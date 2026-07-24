@@ -227,3 +227,53 @@ Biggest domain day so far. Direct input to Phase 4 (Payment Engine) code contrac
 - `docs/domain/txn-lifecycle.md` — 11 sections, ~1200 lines. State-machine diagrams for payment intent (8-state), card sub-states, UPI sub-states, refund, chargeback, AutoPay mandate, reconciliation. Full idempotency contract + retry decision tree + 15 anti-patterns.
 
 **Next session:** Day 4 — **Money representation + double-entry ledger 101**. Deliverables: `money-math.md` + `ledger-101.md`. Before Day 4, fill Section 11 of `txn-lifecycle.md`.
+
+---
+
+## 2026-07-24 · Phase -1 · Day 4 · Money Math + Ledger 101
+
+Two files today: `money-math.md` (representation, rounding, FX, GST) + `ledger-101.md` (double-entry foundations).
+
+**What I learned (own words after Q&A):**
+
+**Money math:**
+- Float breaks money at any scale beyond a single txn. `0.1 + 0.2 !== 0.3` in IEEE 754. Store as **integer minor units** (paise for INR, cents for USD).
+- Currency always tags the amount (ISO 4217). Decimals vary by currency: INR/USD = 2, JPY = 0, BHD = 3.
+- **Banker's rounding (half-even)** is the ISO/IEEE standard for financial systems — half-up creates upward drift over millions of txns; half-even doesn't.
+- **Multiply first, divide last** in percent math. Basis points (bps) as integers, not float percentages. Wrong order = silent ₹1.64/txn loss in Q-D4-2 example.
+- Currency mismatch on + / − = ERROR. Sums are exact, no epsilon. Deltas via DR/CR direction, never signed integers.
+- **India GST 18% on MDR** (not on amount). Stored as separate posting from MDR itself.
+- Postgres `BIGINT NOT NULL` for money. TS `bigint`, never `number`. Display via `Intl.NumberFormat('en-IN', ...)` for Indian numbering (lakhs/crores).
+
+**Ledger 101:**
+- payment_intents ≠ ledger. Separate concerns: payment_intents = "what happened on the wire"; ledger = "who owes whom right now".
+- **Double-entry rule:** every txn = 2+ postings, `SUM(DR) = SUM(CR)` per journal entry. Off by ₹1 = commit rejected.
+- 5 account types with normal-balance directions: **Asset (DR), Liability (CR), Revenue (CR), Expense (DR), Equity (CR)**.
+- **`merchant_payable` is a LIABILITY** — money we owe merchants, not our own asset. Balance sheet identity: `cash_nodal ≈ merchant_payable + tax_payable + frozen`. If cash < payable → insolvent for merchant obligations (exactly what RBI nodal-escrow rules prevent).
+- Chart of accounts locked at Phase 5 seed: `1001 cash_nodal_yesbank`, `1010 customer_receivable`, `2001 merchant_payable`, `2002 merchant_payable_frozen`, `2020 tax_payable_gst`, `3001 mdr_income`, `4010 chargeback_fee_expense`, etc.
+- Three-table shape: `accounts` / `journal_entries` / `postings` at three granularities.
+- **Ledger is immutable.** No UPDATE, no DELETE. Fix wrong postings via **compensating journal entries** referencing the original. RBI compliance + audit trail + fraud detection all rely on immutability.
+- Invariants L1-L5: DR=CR balanced, immutable, currency-consistent per JE, atomic writes, accounts typed + immutable.
+- **UPI txn ledger = ~3× less volume than card** (no MDR/GST postings for UPI P2M).
+- Ledger reads via `account_balances` view; materialise for performance in Phase 11.
+- EOD reconciliation checks: `ledger cash_nodal == bank statement`, `ledger merchant_payable == sum of merchant portal balances`. Drift = bug.
+
+**Key mental models locked:**
+
+- **Money = integer minor units + currency tag.** Never float. Never nullable.
+- **Multiply first, divide last.** Wrong order silently drops rupees.
+- **Banker's rounding** — no drift at scale, auditor-standard.
+- **DR + CR must balance per journal entry.** Ledger's iron law.
+- **Ledger is append-only.** Fix bugs via new compensating JE, never UPDATE/DELETE.
+- **`merchant_payable` = liability.** Their money in our escrow, always.
+
+**Quiz results:**
+- 6 questions across money math + ledger. Scored ~95% on first attempt.
+- Small term slip on Q-D4-2 ("divides cause precision low") but concept correct.
+- Big improvement from Day 3 (~40-50%) — mechanical rules stick faster than state machines.
+
+**Artifacts produced:**
+- `docs/domain/money-math.md` — 11 sections. Rules that become DB constraints + code assertions in Phase 4/5.
+- `docs/domain/ledger-101.md` — 11 sections. Foundation for Phase 5 (Double-Entry Ledger). Includes chart of accounts seed, end-to-end walkthrough (₹1000 card + refund → 10 postings across 5 JEs), reconciliation invariants.
+
+**Next session:** Day 5 — **Idempotency + reliability deep-dive** (`idempotency.md`). Beyond what §7 of txn-lifecycle covered — event delivery semantics, at-least-once vs exactly-once, replay, DLQ.
