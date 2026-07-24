@@ -657,17 +657,64 @@ Team says "we have exactly-once via Kafka" and skips inbox dedup on DB writes. D
 
 ---
 
-## 11 · What I still don't understand
+### 11.1 · Top gap — pattern selection: which one, when?
 
-Vaibhaw to fill honestly. Candidate gaps:
+Multiple reliability patterns covered in this doc mingle. Which pattern solves which problem?
 
-- **Outbox row cleanup** — outbox table grows unbounded. When can I safely DELETE published rows? What's the retention policy?
-- **CDC (Debezium) tradeoffs** — for Phase 11, should PayForge switch to CDC-based outbox? What breaks?
-- **Saga orchestrator implementation** — libraries in Node? Or roll our own state machine?
-- **Deadline propagation across HTTP + Kafka** — how does the deadline travel? Headers? Payload metadata?
-- **Kafka producer configs I need to remember** — `enable.idempotence`, `acks=all`, `max.in.flight.requests.per.connection`, `retries`. What are the safe defaults?
-- **Handling poison messages in DLQ** — event that literally cannot be processed. Manual triage flow?
-- **Replay safety** — replaying a DLQ event with the original event_id — inbox dedupes it → skips. But what if we WANT the replay to process (previous attempt truly failed pre-inbox-insert)? How do I distinguish?
+**Decision matrix — read this any time you're unsure:**
 
-**Instruction to future me:** re-read §4 (outbox) + §5 (inbox) + §6.5 (deadline propagation) + §10 (bugs) before writing any Phase 4 / Phase 7 code.
+| Problem | Pattern | Table / mechanism |
+|---------|---------|-------------------|
+| Merchant retries POST /payments after timeout — don't double-charge | **HTTP idempotency-key** | `idempotency_keys` table |
+| Same PSP webhook delivered N times — don't double-process | **Inbox pattern** | `inbox` table with `event_id` UNIQUE |
+| Same Kafka event consumed N times (rebalance, reprocessing) | **Inbox pattern** | `inbox` table with `event_id` UNIQUE |
+| Two concurrent handlers both see "not exists" and both INSERT | **`INSERT ... ON CONFLICT DO NOTHING`** | DB unique-constraint atomicity |
+| State transition race — two threads both mark PROCESSING → SUCCEEDED | **Compare-and-set** | `UPDATE ... WHERE state='PROCESSING' RETURNING` |
+| DB commit + Kafka publish must be atomic | **Outbox pattern** | `outbox` table written in same DB txn |
+| Concurrent workers polling the same queue table | **`FOR UPDATE SKIP LOCKED`** | Postgres row-lock |
+| Retrying transient PSP failures (503, timeout) | **Exp backoff + jitter + circuit breaker** | Retry loop with cap |
+| Retry budget exhausted, message can't be processed | **Dead Letter Queue** | `dlq_events` table + alerts |
+| A flow spans multiple services with separate DBs | **Saga (orchestration)** | Central saga state machine |
+| Downstream fanout (analytics, webhooks) doesn't need central coordination | **Saga (choreography)** | Event-driven, no coordinator |
+| Merchant's webhook endpoint slow → don't block payment | **Async delivery via queue + retry + DLQ** | Kafka topic + worker |
+| Same payment_intent state machine in flight, one message consumed twice mid-transition | **Combined:** Compare-and-set + Inbox | Both atomicity guards |
+| Deadline propagation across hops | **Deadline in request context** | Header + timeout enforcement each hop |
+
+### 11.2 · Two-question decision tree
+
+When designing a new flow, ask:
+
+**Q1: "Can this operation happen more than once?"** (retries, redelivery, restarts)
+- Yes → you need **idempotency** somewhere. Pick from:
+  - HTTP layer → `idempotency_keys`
+  - Message consumer → `inbox`
+  - State update → compare-and-set
+
+**Q2: "Does this flow cross a system boundary that isn't a DB txn?"** (Kafka, HTTP, another service)
+- Yes → you need **outbox on write side + inbox on read side + saga if multi-step**.
+- No (single DB txn) → just use the DB transaction.
+
+Answer both → you know which patterns to reach for.
+
+### 11.3 · Patterns often confused
+
+| Confused pair | Distinction |
+|---------------|-------------|
+| Idempotency-key vs Inbox | Idempotency-key = HTTP request dedup (client-generated). Inbox = message/event dedup (server/producer-generated event_id). |
+| Outbox vs DLQ | Outbox = successful-publish table. DLQ = failed-after-retries table. Different purposes. |
+| Saga vs DB transaction | Saga = multi-service, eventual consistency, compensations. Txn = single DB, strong consistency, rollback. Use txn if you can. |
+| Choreography vs Orchestration | Choreography = event-driven, no coordinator. Orchestration = central state machine. Different coordination models. |
+| Circuit breaker vs retry | Retry = try again after failure. Breaker = STOP retrying when systemic failure. Complementary. |
+
+### 11.4 · Other remaining gaps
+
+- **Outbox row cleanup** — when to safely DELETE published rows. Retention policy?
+- **CDC (Debezium) tradeoffs** — for Phase 11, should PayForge switch? What breaks?
+- **Saga orchestrator implementation** — libraries in Node, or roll our own state machine?
+- **Deadline propagation across HTTP + Kafka** — headers? Payload metadata? Standard header name?
+- **Kafka producer safe defaults** — `enable.idempotence=true`, `acks=all`, `max.in.flight.requests.per.connection=5`, `retries=Infinity` + timeout.
+- **Poison messages** — event that literally can't process. Manual triage flow?
+- **Replay preserving event_id** — replaying keeps same event_id → inbox skips it (good). But if we WANT it to process (previous attempt failed pre-inbox-insert), how to signal?
+
+**Instruction to future me:** re-read §11.1 (pattern-selection matrix) + §11.2 (two-question tree) any time patterns mingle. Then §4/5 (outbox/inbox) + §6.5 (deadline propagation) + §10 (bugs) before writing any Phase 4/7 code.
 
