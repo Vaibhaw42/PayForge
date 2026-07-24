@@ -165,6 +165,81 @@ Granularities:
 
 **One journal entry = 2+ postings. `SUM(DR) = SUM(CR)` within the JE.**
 
+### 5.1 · What each of the three tables actually contains — concrete rows
+
+To lock the distinction, here is one event (a ₹1000 UPI payment succeeding) rendered as **actual rows in all three tables**:
+
+**`accounts` — seeded once, does NOT change per txn**
+
+Static lookup. Populated at Phase 5 bootstrap. One row per account across the entire company.
+
+| id | code | slug | type | normal | currency |
+|----|------|------|------|--------|----------|
+| a11 | 1010 | customer_receivable | asset | DR | INR |
+| a12 | 2001 | merchant_payable | liability | CR | INR |
+| a13 | 1001 | cash_nodal_yesbank | asset | DR | INR |
+| a14 | 3001 | mdr_income | revenue | CR | INR |
+| ... | | | | | |
+
+Every merchant's postings hit these **same** accounts. Merchant separation happens on `journal_entries.merchant_id`, not on the accounts table.
+
+**`journal_entries` — one row per event**
+
+One row per business event. Groups the postings that record that event.
+
+| id | merchant_id | event_type | ref_type | ref_id | currency | posted_at |
+|----|------------|------------|----------|--------|----------|-----------|
+| je-101 | m-abc | payment.succeeded | payment_intent | pi_xyz789 | INR | 2026-07-24 14:32:07 |
+
+One row. No amount, no direction. Just "this event happened, here's what it points to". The actual money movement lives in `postings`.
+
+**`postings` — 2+ rows per journal entry, one per DR or CR line**
+
+The actual accounting lines. Each row hits ONE account with ONE direction and ONE amount.
+
+| id | journal_entry_id | account_id | direction | amount_minor | currency |
+|----|-------------------|------------|-----------|--------------|----------|
+| p-501 | je-101 | a11 (customer_receivable) | DR | 100000 | INR |
+| p-502 | je-101 | a12 (merchant_payable) | CR | 100000 | INR |
+
+Two rows for this simple JE. Both reference the same `journal_entry_id = je-101`. `SUM(DR) = SUM(CR) = 100000` ✓.
+
+### 5.2 · How the three tables differ — one-line each
+
+| Table | Row means | Rows per business event | Amount / direction? |
+|-------|-----------|-------------------------|---------------------|
+| **`accounts`** | one account in the chart of accounts | 0 (populated once at bootstrap) | No — accounts are dimensions, not values |
+| **`journal_entries`** | one event happened | 1 | No — JEs group postings, they don't hold money |
+| **`postings`** | one accounting line hits one account | **2+** (must balance to zero) | **Yes** — every posting has direction + amount |
+
+Reading pattern:
+
+- **Q: "What's the balance of `merchant_payable` right now?"** → aggregate over `postings` where `account_id = merchant_payable`, grouped by direction.
+- **Q: "What events touched merchant X on 2026-07-24?"** → filter `journal_entries` by `merchant_id` + date.
+- **Q: "What accounts exist and their types?"** → read `accounts`.
+
+You can't answer any of these by looking at just one table — the three-table shape is required.
+
+### 5.3 · Full trace for one txn — ₹1000 card payment + MDR + GST
+
+Same shape at scale. Three JEs for the payment side (before payout / refund):
+
+| JE id | event_type | postings |
+|-------|-----------|----------|
+| je-201 | payment.succeeded | DR customer_receivable 100000 / CR merchant_payable 100000 |
+| je-202 | mdr.recognised | DR merchant_payable 2000 / CR mdr_income 2000 |
+| je-203 | gst.recognised | DR merchant_payable 360 / CR tax_payable_gst 360 |
+
+Three JEs, six postings across 4 accounts. `merchant_payable` balance after these three JEs = `100000 − 2000 − 360 = 97640` paise = ₹976.40.
+
+The **payment_intent row** (from `payment_intents` table) is completely separate — it says "state = SUCCEEDED, amount = 100000". The **ledger** records the *money consequence* of that state.
+
+**Two-domain summary:**
+
+- `payment_intents` — "the state machine said SUCCEEDED at 14:32"
+- `journal_entries` + `postings` — "here's exactly where the ₹1000 went and how it was split"
+
+
 
 
 ---
@@ -354,7 +429,26 @@ Any drift = a bug somewhere upstream (missed webhook, wrong posting direction, r
 
 ## 11 · What I still don't understand
 
-Vaibhaw to fill honestly. Candidate gaps:
+### Top gap (2026-07-24)
+
+**Exact ledger double-entry record — the mechanics + how the three tables differ**
+
+The three-table shape was still fuzzy after §5. Locked with §5.1 (concrete rows for one UPI txn) + §5.2 (one-line comparison table) + §5.3 (full ₹1000 card + MDR + GST trace).
+
+Key insight now locked:
+
+- `accounts` = static dimension, seeded once. Same accounts across every merchant + txn. No money in this table.
+- `journal_entries` = one row per business event. No amount, no direction — just "this event happened".
+- `postings` = 2+ rows per JE. Each row = one DR/CR line hitting one account with one amount.
+- To read a balance, aggregate **`postings`** (not `journal_entries`, not `accounts`).
+- To read history of events, read **`journal_entries`**.
+- To read the schema of accounts, read **`accounts`**.
+
+Two-domain summary:
+- `payment_intents` = state machine of the txn.
+- `journal_entries` + `postings` = money consequence of the state machine.
+
+### Other remaining gaps
 
 - **Materialised balance concurrency** — under 1000 QPS of postings, is the trigger-based cache safe? Deadlocks?
 - **Chart of accounts evolution** — how to add / rename accounts over time without breaking historical postings?
@@ -362,5 +456,5 @@ Vaibhaw to fill honestly. Candidate gaps:
 - **Chargeback ledger vs dispute state machine** — do frozen funds move via JE (with `_frozen` account) or via a state field on `merchant_payable`? The former is cleaner but adds JEs.
 - **Trigger complexity** — for L1 balanced-JE check, is a deferrable constraint trigger the right pattern? Or better to enforce at application layer?
 
-**Instruction to future me:** re-read §2 (DR=CR invariant), §6 (L1-L5), §7 (compensating entries) before writing any Phase 5 code.
+**Instruction to future me:** re-read §5.1–§5.3 (concrete-rows examples), §2 (DR=CR invariant), §6 (L1-L5), §7 (compensating entries) before writing any Phase 5 code.
 
