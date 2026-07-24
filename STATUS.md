@@ -4,7 +4,7 @@
 
 ## Current phase
 
-🟡 **Phase -1 · FinTech Fundamentals** — Day 4 complete → Day 5 next
+🟡 **Phase -1 · FinTech Fundamentals** — Day 5 complete → Day 6 next
 
 Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain/).
 
@@ -16,8 +16,8 @@ Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain
 | 2 | Payment methods (cards + UPI deep-dive) | `docs/domain/payment-methods.md` | ✅ done |
 | 3 | Transaction lifecycle + states | `docs/domain/txn-lifecycle.md` | ✅ done |
 | 4 | Money representation + double-entry basics | `docs/domain/money-math.md` + `ledger-101.md` | ✅ done |
-| 5 | Idempotency + reliability | `docs/domain/idempotency.md` | ⏳ next |
-| 6 | Compliance map (PCI, RBI PA/PG, KYC/AML) | `docs/domain/compliance-map.md` |
+| 5 | Idempotency + reliability | `docs/domain/idempotency.md` | ✅ done |
+| 6 | Compliance map (PCI, RBI PA/PG, KYC/AML) | `docs/domain/compliance-map.md` | ⏳ next |
 | 7 | Stripe + Razorpay reference architectures | `docs/domain/reference-architecture-notes.md` |
 | 8 | Recap + quiz | Green light to Phase 0 |
 
@@ -73,5 +73,5 @@ None.
 
 ## Next session
 
-- Day 5: **Idempotency + reliability.** Deep-dive on idempotency contracts (partly touched in txn-lifecycle §7), at-least-once vs exactly-once semantics, retry safety, event delivery guarantees, replay, DLQ. Deliverable: `docs/domain/idempotency.md`.
-- Before starting Day 5, Vaibhaw to fill Section 11 of `money-math.md` and Section 11 of `ledger-101.md`.
+- Day 6: **Compliance map.** RBI PA/PG guidelines (2020), PCI DSS scope, KYC/AML, data localization (2018), FIU-IND STR/SAR, GST invoicing, PMLA record retention. Deliverable: `docs/domain/compliance-map.md`.
+- Before starting Day 6, Vaibhaw to fill Section 11 of `idempotency.md`.

@@ -277,3 +277,67 @@ Two files today: `money-math.md` (representation, rounding, FX, GST) + `ledger-1
 - `docs/domain/ledger-101.md` — 11 sections. Foundation for Phase 5 (Double-Entry Ledger). Includes chart of accounts seed, end-to-end walkthrough (₹1000 card + refund → 10 postings across 5 JEs), reconciliation invariants.
 
 **Next session:** Day 5 — **Idempotency + reliability deep-dive** (`idempotency.md`). Beyond what §7 of txn-lifecycle covered — event delivery semantics, at-least-once vs exactly-once, replay, DLQ.
+
+---
+
+## 2026-07-24 · Phase -1 · Day 5 · Idempotency + Reliability Deep-Dive
+
+Deeper dive than txn-lifecycle §7-8. Direct input to Phase 4/5/7/12.
+
+**What I learned (own words after Q&A):**
+
+- **8 fallacies of distributed computing (Deutsch, 1994)** — network reliable, latency zero, bandwidth infinite, secure, topology stable, one admin, transport free, homogeneous. Every fintech bug violates one.
+- **Two-generals problem** proves exactly-once is impossible via any finite protocol. Real payments use **at-least-once + idempotent receiver** = "effectively-once".
+- **Delivery guarantees** — three modes: at-most-once (fire and forget), at-least-once (retries with duplicates), exactly-once (theoretical). Kafka has EOS but scoped only to Kafka boundary — the moment output writes Postgres or HTTP, back to at-least-once.
+- **Ordering** — Kafka guarantees FIFO per partition only. Cross-partition ordering has no guarantee. Producer needs `enable.idempotence=true`. Partition key for PayForge: `payment_intent_id` for payment events, `merchant_id` for merchant events.
+- **Idempotency has two flavours** — Type A (HTTP idempotency-key header, txn-lifecycle §7) and Type B (consumer event-id dedup, this doc). Same principle, different transport.
+- **Three flavours of idempotent operations** — natural (`UPDATE ... WHERE state='PROCESSING'`), guarded (`INSERT ... ON CONFLICT DO NOTHING`), ledger-idempotence via event-id unique.
+- **Compare-and-set pattern** — replace `SELECT then UPDATE` with `UPDATE ... WHERE state='X' RETURNING`. Atomic. No race.
+- **Idempotency guards MUST live in DB, not memory.** Process restarts wipe in-memory sets. DB is atomic boundary.
+
+**Two industrial patterns locked:**
+
+- **Outbox pattern** — write event to outbox table in SAME DB transaction as business write. Separate worker (or CDC/Debezium) publishes to Kafka. Solves: DB commit + Kafka publish atomicity. Beats 2PC on scale + latency.
+- **Inbox pattern** — consumer dedupes on `event_id` via `INSERT ... ON CONFLICT DO NOTHING` before processing. Insert + process in ONE transaction so crash = clean retry.
+- Combined: Outbox + Inbox = the "effectively-once" recipe every fintech uses.
+
+**Retry policies (production-grade):**
+- Full-jitter formula preferred at scale over equal-jitter.
+- Retry budget = max attempts + wall-clock deadline. Exhausted → DLQ, never silent drop.
+- Deadline propagation — every downstream call has timeout ≤ remaining budget, never fixed.
+- Retry storm prevention: circuit breakers, adaptive retries, budget windows, deadline propagation.
+
+**DLQ design:**
+- Every retry-exhausted message lands in DLQ table.
+- Full payload + error history retained.
+- DLQ item = page + dashboard tile visible.
+- Triage tool: inspect / requeue / discard / replay.
+
+**Saga pattern:**
+- For flows spanning multiple services (Phase 12).
+- Sequence of local transactions + compensating actions for reverse direction.
+- Two coordination styles: **choreography** (event-driven, decentralised) vs **orchestration** (central coordinator).
+- PayForge future split: orchestration for critical payment flow (auditable); choreography for downstream fanout (webhook, analytics).
+- Sagas are NOT transactions — no isolation, no atomicity, compensations may fail.
+
+**15 common reliability bugs catalogued** — missing outbox, missing inbox, in-memory dedup, SELECT-then-INSERT for dedup, retry without idempotency key, retry on non-terminal states, fixed timeouts, silent DLQ drain, cross-service DB txn, non-idempotent consumer of at-least-once queue, missing `enable.idempotence`, reading from replica mid-flow, replay dedup mistakes, exactly-once confusion.
+
+**Key mental models locked:**
+
+- **Exactly-once = at-least-once + idempotent receiver.** No magic delivery mode.
+- **Outbox + Inbox = effectively-once.** Standard industry recipe.
+- **All idempotency guards live in DB atomicity.** Never memory. Never SELECT-then-INSERT.
+- **`INSERT ... ON CONFLICT DO NOTHING` is your race gate.** Single atomic op.
+- **`FOR UPDATE SKIP LOCKED`** for concurrent worker pools reading a queue table.
+- **Deadline propagation** — every hop respects caller's remaining budget.
+- **DLQ every retry-exhausted message. Never silent drop.**
+
+**Quiz results:**
+- 6 questions across sections. Scored ~90% on first attempt. Only Q-D5-3 needed correction (named the pattern vaguely as "exactly once pattern" instead of "outbox pattern").
+- Improvement over Day 3 (~45%) is significant — patterns stick faster than state machines.
+
+**Artifacts produced:**
+
+- `docs/domain/idempotency.md` — 11 sections, ~600 lines. Foundations (8 fallacies, two-generals), delivery guarantees, idempotency deep-dive, Outbox pattern, Inbox pattern, retry policies, DLQ design, saga pattern, choreography vs orchestration, 15 common bugs.
+
+**Next session:** Day 6 — **Compliance map** (`compliance-map.md`). RBI PA/PG guidelines, PCI DSS, KYC/AML, data localization, PMLA, GST invoicing.
