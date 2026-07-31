@@ -404,3 +404,34 @@ Every future phase inherits this constraint. Any feature needing a real license 
 **Phase -1 total output:** 8 domain docs (~4000 lines), 1 ADR, 1 recap. All committed to `main`, tag `phase-minus-1-complete`.
 
 **Next session:** **Phase 0 — Planning & Requirements.** Vision, personas, scope, non-goals, functional + non-functional reqs, success metrics, baseline ADRs 0002+. Deliverable: `docs/architecture/phase-0.md`.
+
+---
+
+## 2026-07-31 · Phase 0 · Planning & Requirements — DONE
+
+Per new concise-docs rule (feedback-collab-style §8), keeping this brief.
+
+**Locked in phase-0.md:**
+- Vision: A+C blend (learning platform + reference architecture), India-first + extensible, full-depth 14-phase / 9-month timeline.
+- Personas day-one: Merchant (mid-market e-comm) + Customer/Payer + PayForge Ops. Deferred: Developer, Fraud analyst, Auditor.
+- Scope + non-goals: 15-item "never build" list. Deferred bucket has ML fraud detection escalated as wanted.
+- Success metrics M1–M5: phase-completion in 9mo, ledger drift = 0, ≥90% test coverage on money code, concise docs, self-attested cold-read every 3 phases.
+- Functional reqs per phase (terse; MVP cutoff = Phase 4).
+- Non-functional reqs: latency, throughput, security, compliance defaults.
+- Baseline architecture: pnpm monorepo, day-one monolith with 7 domain seams, REST+JSON via OpenAPI-from-Zod, hybrid deploy (compose → k8s Phase 13).
+
+**8 ADRs filed (0002-0009):**
+- 0002 TypeScript strict + Node 22 + Zod
+- 0003 Fastify (over NestJS / Express — Fastify wins on learning-per-hour + velocity)
+- 0004 Prisma
+- 0005 Postgres 17 + Redis 7 + Kafka (KRaft)
+- 0006 Pino + Prometheus/Grafana + OpenTelemetry/Jaeger
+- 0007 Vitest + Supertest + fast-check + k6
+- 0008 Next.js + Tailwind + shadcn/ui + Recharts
+- 0009 Docker Compose (dev/staging) + k8s Phase 13 prod-sim + GitHub Actions
+
+**Governance rule locked:** concise docs from Phase 0 onward (feedback-collab-style §8). Phase -1 docs stay as-is; new docs are tighter.
+
+**Artifacts:** `docs/architecture/phase-0.md` (8 sections), ADRs 0002-0009.
+
+**Next:** Phase 1 kickoff — monorepo scaffolding + Fastify skeleton + Prisma + Docker Compose infra + CI baseline.

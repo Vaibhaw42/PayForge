@@ -5,8 +5,9 @@
 ## Current phase
 
 ✅ **Phase -1 · FinTech Fundamentals — COMPLETE (2026-07-24)** · Git tag `phase-minus-1-complete`
+✅ **Phase 0 · Planning & Requirements — COMPLETE (2026-07-31)** · Git tag `phase-0-complete`
 
-🟡 **Phase 0 · Planning & Requirements** — starting next session
+🟡 **Phase 1 · Foundation & Architecture + Docker onboarding** — starting next session
 
 Domain-only phase. No code. All artifacts land in [`docs/domain/`](./docs/domain/).
 
@@ -75,13 +76,18 @@ None.
 
 ## Next session
 
-**Phase 0 — Planning & Requirements** kickoff.
+**Phase 1 · Foundation & Architecture + Docker onboarding.**
 
-- Vision, personas, scope, non-goals.
-- Functional requirements (user stories per feature).
-- Non-functional requirements (latency, availability, consistency, security).
-- Success metrics.
-- Baseline ADRs 0002+ (stack, framework, monorepo, testing, observability choices).
-- Deliverable: `docs/architecture/phase-0.md` + additional ADRs.
+Lifecycle: plan → DB → API → impl → tests → docs → perf → git tag.
 
-Governing decision: [ADR-0001](docs/decisions/ADR-0001-simulate-pa-no-real-money.md) — simulate PA, no real money, production-grade elsewhere.
+Focus:
+- Monorepo scaffolding (pnpm workspaces per ADR-0009)
+- `apps/{backend,frontend,ops}` + `packages/{config,database,logger,shared,types}` skeletons
+- Fastify skeleton (health check, error handler, request id, structured logging via Pino)
+- Prisma + Postgres baseline schema
+- Redis + Kafka (KRaft) via Docker Compose
+- `.env.example` + Zod-validated config loader
+- CI baseline (lint + typecheck via GitHub Actions)
+- Docker fluency exercises since it's Vaibhaw's gap
+
+Governing decisions: ADRs 0001-0009.
