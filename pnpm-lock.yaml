@@ -30,6 +30,15 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/config:
+    dependencies:
+      dotenv:
+        specifier: ^16.4.7
+        version: 16.6.1
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+
 packages:
 
   '@eslint-community/eslint-utils@4.10.1':
@@ -225,6 +234,10 @@ packages:
 
   deep-is@0.1.4:
     resolution: {integrity: sha512-oIPzksmTg4/MriiaYGO+okXDT7ztn/w3Eptv/+gSIdMdKsJo0u4CfYNFJPy+4SKMuCqGw2wxnA+URMg3t8a/bQ==}
+
+  dotenv@16.6.1:
+    resolution: {integrity: sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==}
+    engines: {node: '>=12'}
 
   escape-string-regexp@4.0.0:
     resolution: {integrity: sha512-TtpcNJ3XAzx3Gq8sWRzJaVajRs0uVxA2YAkdb1jm2YkPz4G6egUFAyA3n5vtEIZefPk5Wa4UXbKuS5fKkJWdgA==}
@@ -498,6 +511,9 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
 snapshots:
 
   '@eslint-community/eslint-utils@4.10.1(eslint@9.39.5(supports-color@7.2.0))':
@@ -721,6 +737,8 @@ snapshots:
       supports-color: 7.2.0
 
   deep-is@0.1.4: {}
+
+  dotenv@16.6.1: {}
 
   escape-string-regexp@4.0.0: {}
 
@@ -963,3 +981,5 @@ snapshots:
   word-wrap@1.2.5: {}
 
   yocto-queue@0.1.0: {}
+
+  zod@3.25.76: {}
