@@ -1,0 +1,39 @@
+{
+  "name": "payforge",
+  "version": "0.0.0",
+  "description": "Personal fintech platform — India-first, learning-first, simulated PA. Governed by ADRs in docs/decisions/.",
+  "private": true,
+  "license": "MIT",
+  "author": "Vaibhaw Rai <vaibhaw@example.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Vaibhaw42/PayForge.git"
+  },
+  "packageManager": "pnpm@11.15.1",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint . --ext .ts,.tsx",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,json,md,yml,yaml}\"",
+    "test": "pnpm -r test",
+    "dev:infra": "docker compose -f docker/compose.dev.yml up -d",
+    "dev:infra:down": "docker compose -f docker/compose.dev.yml down",
+    "dev:infra:logs": "docker compose -f docker/compose.dev.yml logs -f",
+    "clean": "pnpm -r exec rm -rf dist .turbo node_modules && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.21.0",
+    "@typescript-eslint/parser": "^8.21.0",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^10.0.1",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3"
+  }
+}

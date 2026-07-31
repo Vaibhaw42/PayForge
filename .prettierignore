@@ -1,0 +1,11 @@
+node_modules
+dist
+.next
+build
+coverage
+.turbo
+pnpm-lock.yaml
+
+# Docs frozen from Phase -1 formatting — do not reformat markdown.
+docs/**/*.md
+*.md
