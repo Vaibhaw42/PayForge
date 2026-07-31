@@ -46,6 +46,7 @@ What we chose and why.
 | 0007 | [Testing = Vitest + Supertest + fast-check + k6](ADR-0007-testing-stack.md) | Accepted | 2026-07-31 |
 | 0008 | [Frontend = Next.js + Tailwind + shadcn/ui + Recharts](ADR-0008-frontend-nextjs-tailwind-shadcn.md) | Accepted | 2026-07-31 |
 | 0009 | [Infra + Deploy = Docker Compose (dev/staging) + k8s Phase 13 prod-sim](ADR-0009-infra-deploy-hybrid.md) | Accepted | 2026-07-31 |
+| 0010 | [Kafka image = apache/kafka (KRaft mode)](ADR-0010-kafka-image-apache.md) | Accepted | 2026-07-31 |
 
 ## Rules
 

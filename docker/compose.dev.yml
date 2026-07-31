@@ -1,0 +1,126 @@
+# PayForge — local dev infrastructure
+#
+# Boot everything: pnpm dev:infra   (i.e., docker compose -f docker/compose.dev.yml up -d)
+# Stop:            pnpm dev:infra:down
+# Logs:            pnpm dev:infra:logs
+#
+# Governance: ADR-0005 (Postgres/Redis/Kafka), ADR-0009 (compose in dev), ADR-0010 (apache/kafka).
+
+name: payforge
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres 17 — source of truth for all financial state
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    container_name: payforge-postgres
+    restart: unless-stopped
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: payforge
+      POSTGRES_PASSWORD: payforge_dev_password
+      POSTGRES_DB: payforge
+      # Force UTC storage — no clock drift surprises across environments.
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U payforge -d payforge']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - payforge-net
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 — cache, rate limit, session store
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: payforge-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    # `--save ""` disables RDB persistence for dev (faster restarts).
+    # `--appendonly no` disables AOF (in dev only).
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - payforge-net
+
+  # ---------------------------------------------------------------------------
+  # Kafka 3.9 (KRaft mode — no Zookeeper) per ADR-0010
+  # Single-node combined controller+broker for local dev.
+  # Two listeners:
+  #   INTERNAL://payforge-kafka:29092  → for other containers on payforge-net
+  #   EXTERNAL://localhost:9092         → for host processes (apps/backend on pnpm dev)
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: payforge-kafka
+    restart: unless-stopped
+    ports:
+      - '9092:9092' # external listener
+    environment:
+      # --- Node identity ---
+      KAFKA_NODE_ID: '1'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@payforge-kafka:9093'
+
+      # --- Listeners ---
+      KAFKA_LISTENERS: 'INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'INTERNAL://payforge-kafka:29092,EXTERNAL://localhost:9092'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'INTERNAL'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+
+      # --- Single-node topic replication ---
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: '1'
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: '1'
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: '1'
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: '0'
+
+      # --- Cluster id (stable across restarts) ---
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+
+      # --- Log dir inside the container ---
+      # No named volume in dev — data is ephemeral, restart wipes it.
+      # Prod (Phase 13, k8s) uses PersistentVolumeClaim with correct fsGroup.
+      # See ADR for k8s deployment in Phase 13.
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    networks:
+      - payforge-net
+
+# -----------------------------------------------------------------------------
+# Volumes — named so they survive container recreation.
+# Purge with: docker compose -f docker/compose.dev.yml down -v
+# -----------------------------------------------------------------------------
+volumes:
+  postgres-data:
+    name: payforge-postgres-data
+
+# -----------------------------------------------------------------------------
+# Network — isolated bridge for all payforge services.
+# Backend running on host reaches services via published ports (localhost:5432 etc).
+# Backend running as a container (Phase 13 k8s) will reach via service DNS.
+# -----------------------------------------------------------------------------
+networks:
+  payforge-net:
+    name: payforge-net
+    driver: bridge
