@@ -1,5 +1,5 @@
 {
-  "name": "@payforge/config",
+  "name": "@payforge/types",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,9 +16,5 @@
     "typecheck": "tsc --noEmit",
     "test": "echo 'no tests yet'",
     "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "dotenv": "^16.4.7",
-    "zod": "^4.4.3"
   }
 }

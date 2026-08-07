@@ -1,5 +1,5 @@
 {
-  "name": "@payforge/config",
+  "name": "@payforge/shared",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,7 +18,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "dotenv": "^16.4.7",
+    "@payforge/types": "workspace:*",
     "zod": "^4.4.3"
   }
 }

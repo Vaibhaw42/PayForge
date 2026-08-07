@@ -1,0 +1,31 @@
+{
+  "name": "@payforge/backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/bootstrap.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx watch src/bootstrap.ts",
+    "start": "node dist/bootstrap.js",
+    "test": "echo 'no tests yet'",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fastify/type-provider-zod": "^1.0.0",
+    "@payforge/config": "workspace:*",
+    "@payforge/database": "workspace:*",
+    "@payforge/logger": "workspace:*",
+    "@payforge/shared": "workspace:*",
+    "@payforge/types": "workspace:*",
+    "fastify": "^5.11.2",
+    "fastify-plugin": "^6.0.0",
+    "ioredis": "^6.0.0",
+    "kafkajs": "^2.2.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.10"
+  }
+}
