@@ -1,3 +1,11 @@
 packages:
   - apps/*
   - packages/*
+
+# pnpm 11+ requires explicit opt-in for packages that run install-time scripts.
+# Prisma needs its engines (query engine, migration engine) to be extracted
+# and generated. Approving is safe — these are official Prisma packages.
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  prisma: true

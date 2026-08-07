@@ -17,7 +17,9 @@ services:
     container_name: payforge-postgres
     restart: unless-stopped
     ports:
-      - '5432:5432'
+      # Host 5433 → container 5432. Native postgresql@14 already binds 5432 on
+      # this machine, so we shift ours. In-container callers still use 5432.
+      - '5433:5432'
     environment:
       POSTGRES_USER: payforge
       POSTGRES_PASSWORD: payforge_dev_password
