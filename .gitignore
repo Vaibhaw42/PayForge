@@ -47,6 +47,7 @@ docker-compose.override.yml
 
 # Prisma
 prisma/migrations/dev.db*
+packages/*/prisma/generated/
 
 # Misc
 .cache/
